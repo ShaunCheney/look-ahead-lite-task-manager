@@ -4,7 +4,6 @@ import { v4 as uuid } from "uuid";
 import { DndContext, closestCenter, MouseSensor, TouchSensor, useDroppable, useSensor, useSensors } from "@dnd-kit/core";
 
 import {
-  arrayMove,
   SortableContext,
   verticalListSortingStrategy,
   horizontalListSortingStrategy,
@@ -13,6 +12,9 @@ import {
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { KeyboardSensor } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
+
+import { useBoard } from "./hooks/useBoard";
+import { computeTaskSortOrders, seedDefaultColumnsInSupabase as seedCols } from "./board/boardService";
 
 import {
   GripVertical,
@@ -119,9 +121,6 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
 };
 
 // ========= Helpers for default columns =========
-function seedColumnNames() {
-  return ["Sign Sub Contractors", "Factory Work", "Site Work"];
-}
 
 // ===== CSV helpers (Excel-friendly) =====
 function escapeCsv(value: string | number | undefined | null): string {
@@ -916,10 +915,21 @@ export default function App() {
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState<string>("");
 
-  const [boardLoading, setBoardLoading] = useState(false);
-  const [boardError, setBoardError] = useState<string | null>(null);
-
-  const [{ columns, tasks }, setData] = useState<{ columns: Column[]; tasks: Task[] }>({ columns: [], tasks: [] });
+  
+  const {
+    columns,
+    tasks,
+    tasksByColumn,
+    boardLoading,
+    boardError,
+    setBoard,
+    saveTask,
+    deleteTask,
+    removeColumn,
+    handleDragOver,
+    handleDragEnd,
+    scheduleSaveBoard,
+  } = useBoard(authUserId, currentProjectId);
 
   const [openTask, setOpenTask] = useState<Task | null>(null);
   const [openColumn, setOpenColumn] = useState<Column | null | undefined>(undefined);
@@ -948,123 +958,7 @@ export default function App() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
-  // --- simple save debounce so we don’t hammer Supabase on every tiny move
-  const saveTimerRef = useRef<number | null>(null);
 
-  function scheduleSaveBoard(nextCols: Column[], nextTasks: Task[]) {
-    if (!authUserId || !currentProjectId) return;
-
-    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = window.setTimeout(() => {
-      saveBoardToSupabase(nextCols, nextTasks).catch((e) => {
-        console.error(e);
-        setBoardError(e?.message || "Failed to save board");
-      });
-    }, 300);
-  }
-
-  // ================= Supabase board helpers =================
-  async function loadBoardFromSupabase(projectId: string) {
-    if (!authUserId) return { columns: [] as Column[], tasks: [] as Task[] };
-
-    const { data: colRows, error: colErr } = await supabase
-      .from("project_columns")
-      .select("id,name,sort_order")
-      .eq("project_id", projectId)
-      .order("sort_order", { ascending: true });
-
-    if (colErr) throw colErr;
-
-    const { data: taskRows, error: taskErr } = await supabase
-      .from("tasks")
-      .select("id,title,notes,status,work_days,sort_order,column_id")
-      .eq("project_id", projectId)
-      .order("sort_order", { ascending: true });
-
-    if (taskErr) throw taskErr;
-
-    const cols: Column[] = (colRows || []).map((r: any) => ({ id: r.id, name: r.name }));
-    const tks: Task[] = (taskRows || []).map((r: any) => ({
-      id: r.id,
-      title: r.title,
-      notes: r.notes || undefined,
-      status: (r.status as TaskStatus) || "Unassigned",
-      workDays: typeof r.work_days === "number" ? r.work_days : undefined,
-      columnId: r.column_id,
-    }));
-
-    return { columns: cols, tasks: tks };
-  }
-
-  function computeTaskSortOrders(cols: Column[], tks: Task[]) {
-    const perCol: Record<string, Task[]> = {};
-    for (const c of cols) perCol[c.id] = [];
-    for (const t of tks) (perCol[t.columnId] ||= []).push(t);
-
-    const taskOrder: Record<string, number> = {};
-    for (const colId of Object.keys(perCol)) {
-      const list = perCol[colId];
-      for (let i = 0; i < list.length; i++) {
-        taskOrder[list[i].id] = i;
-      }
-    }
-    return taskOrder;
-  }
-
-  async function saveBoardToSupabase(nextCols: Column[], nextTasks: Task[]) {
-    if (!authUserId || !currentProjectId) return;
-
-    const colPayload = nextCols.map((c, idx) => ({
-      id: c.id,
-      user_id: authUserId,
-      project_id: currentProjectId,
-      name: c.name,
-      sort_order: idx,
-    }));
-
-    const { error: colUpsertErr } = await supabase
-      .from("project_columns")
-      .upsert(colPayload, { onConflict: "id" });
-
-    if (colUpsertErr) throw colUpsertErr;
-
-    const orderMap = computeTaskSortOrders(nextCols, nextTasks);
-    const taskPayload = nextTasks.map((t) => ({
-      id: t.id,
-      user_id: authUserId,
-      project_id: currentProjectId,
-      column_id: t.columnId,
-      title: t.title,
-      notes: t.notes || null,
-      status: t.status,
-      work_days: typeof t.workDays === "number" ? t.workDays : null,
-      sort_order: orderMap[t.id] ?? 0,
-    }));
-
-    const { error: taskUpsertErr } = await supabase
-      .from("tasks")
-      .upsert(taskPayload, { onConflict: "id" });
-
-    if (taskUpsertErr) throw taskUpsertErr;
-  }
-
-  async function seedDefaultColumnsInSupabase(projectId: string) {
-    if (!authUserId) return;
-
-    const names = seedColumnNames();
-    const payload = names.map((name, idx) => ({
-      id: uuid(),
-      user_id: authUserId,
-      project_id: projectId,
-      name,
-      sort_order: idx,
-    }));
-
-    const { error } = await supabase.from("project_columns").insert(payload);
-    if (error) throw error;
-
-    return payload.map((r) => ({ id: r.id, name: r.name })) as Column[];
-  }
 
   // ================= Auth boot + listener =================
   useEffect(() => {
@@ -1113,7 +1007,7 @@ export default function App() {
         if (!cancelled) {
           setProjects([]);
           setCurrentProjectId("");
-          setData({ columns: [], tasks: [] });
+          setBoard({ columns: [], tasks: [] });
           setProjectsLoading(false);
         }
         return;
@@ -1130,7 +1024,7 @@ export default function App() {
         console.error(error);
         setProjects([]);
         setCurrentProjectId("");
-        setData({ columns: [], tasks: [] });
+        setBoard({ columns: [], tasks: [] });
         setProjectsLoading(false);
         return;
       }
@@ -1150,41 +1044,7 @@ export default function App() {
     return () => { cancelled = true; };
   }, [authUserId]);
 
-  // ================= Load board (columns/tasks) for current project =================
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadBoard() {
-      setBoardError(null);
-      if (!authUserId || !currentProjectId) {
-        setData({ columns: [], tasks: [] });
-        return;
-      }
-
-      setBoardLoading(true);
-      try {
-        const loaded = await loadBoardFromSupabase(currentProjectId);
-
-        if (!loaded.columns.length) {
-          const seededCols = await seedDefaultColumnsInSupabase(currentProjectId);
-          if (cancelled) return;
-          setData({ columns: seededCols || [], tasks: [] });
-        } else {
-          if (cancelled) return;
-          setData({ columns: loaded.columns, tasks: loaded.tasks });
-        }
-      } catch (e: any) {
-        console.error(e);
-        if (!cancelled) setBoardError(e?.message || "Failed to load board");
-      } finally {
-        if (!cancelled) setBoardLoading(false);
-      }
-    }
-
-    loadBoard();
-    return () => { cancelled = true; };
-  }, [authUserId, currentProjectId]);
-
+  // Board loading handled by `useBoard` hook
   // Keep mobile column index valid
   useEffect(() => {
     setActiveColIndex((i) => {
@@ -1203,11 +1063,7 @@ export default function App() {
     }
   }, [pendingNewColId, columns]);
 
-  const tasksByColumn = useMemo(() => {
-    const map: Record<string, Task[]> = Object.fromEntries(columns.map(c => [c.id, [] as Task[]]));
-    for (const t of tasks) { (map[t.columnId] ||= []).push(t); }
-    return map;
-  }, [columns, tasks]);
+  // `tasksByColumn` provided by `useBoard`
 
   // ================= Project CRUD =================
   async function refreshProjectsAndSelect(preferId?: string) {
@@ -1249,7 +1105,7 @@ export default function App() {
       }
 
       try {
-        await seedDefaultColumnsInSupabase(inserted.id);
+        await seedCols(authUserId || "", inserted.id);
       } catch (e: any) {
         console.error(e);
         alert("Project created, but failed to seed columns: " + (e?.message || ""));
@@ -1371,150 +1227,14 @@ export default function App() {
   }
 
   // ================= Columns / Tasks =================
-  function saveTask(draft: Task) {
-    const next = (() => {
-      if (draft.id) {
-        return {
-          columns,
-          tasks: tasks.map((t) => (t.id === draft.id ? { ...draft } : t)),
-        };
-      }
-      return {
-        columns,
-        tasks: [...tasks, { ...draft, id: uuid() }],
-      };
-    })();
-
-    setData(next);
-    scheduleSaveBoard(next.columns, next.tasks);
-  }
-
-  async function deleteTask(id: string) {
-    const next = { columns, tasks: tasks.filter(t => t.id !== id) };
-    setData(next);
-
-    const { error } = await supabase.from("tasks").delete().eq("id", id);
-    if (error) {
-      console.error(error);
-      alert(error.message);
-    } else {
-      scheduleSaveBoard(next.columns, next.tasks);
-    }
-  }
+  
 
   function addColumn() {
     setOpenColumn({ id: "", name: "" });
   }
 
-  function renameColumn(c: Column) { setOpenColumn(c); }
-
-  async function removeColumn(id: string) {
-    if (!confirm("Delete this column and all its tasks?")) return;
-
-    const next = {
-      columns: columns.filter(c => c.id !== id),
-      tasks: tasks.filter(t => t.columnId !== id),
-    };
-    setData(next);
-
-    const { error: tErr } = await supabase.from("tasks").delete().eq("column_id", id);
-    if (tErr) console.error(tErr);
-
-    const { error: cErr } = await supabase.from("project_columns").delete().eq("id", id);
-    if (cErr) {
-      console.error(cErr);
-      alert(cErr.message);
-    } else {
-      scheduleSaveBoard(next.columns, next.tasks);
-    }
-  }
-
-  function handleDragOver(event: any) {
-    if (isMobile) return;
-
-    const { active, over } = event;
-    if (!over) return;
-
-    // If we're dragging a column, do not run task move logic
-    if (String(active?.id || "").startsWith("col:")) return;
-
-    const activeTask = tasks.find((t) => t.id === active.id);
-    if (!activeTask) return;
-
-    const overTask = tasks.find((t) => t.id === over.id);
-    const overColumn = columns.find((c) => c.id === over.id);
-    const destColumnId = overTask ? overTask.columnId : overColumn?.id;
-    if (destColumnId && destColumnId !== activeTask.columnId) {
-      const next = {
-        columns,
-        tasks: tasks.map((t) => (t.id === activeTask.id ? { ...t, columnId: destColumnId } : t)),
-      };
-      setData(next);
-      scheduleSaveBoard(next.columns, next.tasks);
-    }
-  }
-
-  function handleDragEnd(event: any) {
-    const { active, over } = event;
-    if (!over) return;
-
-    const activeId = String(active?.id || "");
-    const overId = String(over?.id || "");
-
-    // ================= COLUMN DRAG (desktop) =================
-    if (activeId.startsWith("col:") && overId.startsWith("col:")) {
-      const fromColId = activeId.replace("col:", "");
-      const toColId = overId.replace("col:", "");
-
-      const oldIndex = columns.findIndex((c) => c.id === fromColId);
-      const newIndex = columns.findIndex((c) => c.id === toColId);
-
-      if (oldIndex !== -1 && newIndex !== -1 && oldIndex !== newIndex) {
-        const nextCols = arrayMove(columns, oldIndex, newIndex);
-        const next = { columns: nextCols, tasks };
-        setData(next);
-        scheduleSaveBoard(next.columns, next.tasks);
-      }
-      return;
-    }
-
-    // ================= TASK DRAG =================
-    const activeTask = tasks.find((t) => t.id === active.id);
-    if (!activeTask) return;
-
-    const overTask = tasks.find((t) => t.id === over.id);
-    const sourceColumnId = activeTask.columnId;
-    const destColumnId = overTask ? overTask.columnId : sourceColumnId;
-
-    const sourceList = tasks.filter((t) => t.columnId === sourceColumnId);
-    const destList = tasks.filter((t) => t.columnId === destColumnId);
-
-    const sourceIndex = sourceList.findIndex((t) => t.id === active.id);
-    const destIndex = overTask ? destList.findIndex((t) => t.id === over.id) : destList.length;
-    if (sourceIndex === -1) return;
-
-    let newDestIds: string[];
-    if (sourceColumnId === destColumnId) {
-      const ids = destList.map((t) => t.id);
-      newDestIds = arrayMove(ids, sourceIndex, destIndex);
-    } else {
-      const destIds = destList.map((t) => t.id);
-      newDestIds = [...destIds.slice(0, destIndex), active.id, ...destIds.slice(destIndex)];
-    }
-
-    const moved = tasks.map((t) => (t.id === active.id ? { ...t, columnId: destColumnId } : t));
-    const withOrder = moved.map((t) =>
-      t.columnId === destColumnId
-        ? ({ ...(t as any), __ord: newDestIds.indexOf(t.id) } as any)
-        : (t as any)
-    );
-    withOrder.sort((a: any, b: any) => (a.__ord ?? Number.MAX_SAFE_INTEGER) - (b.__ord ?? Number.MAX_SAFE_INTEGER));
-    withOrder.forEach((t: any) => delete t.__ord);
-
-    const next = { columns, tasks: withOrder as Task[] };
-    setData(next);
-    scheduleSaveBoard(next.columns, next.tasks);
-  }
+  
+  
 
   function handleExportCsv() {
     const header = ["Column", "Title", "Status", "WorkDays", "Notes"];
@@ -1603,7 +1323,7 @@ export default function App() {
           }
 
           const next = { columns: newColumns, tasks: newTasks };
-          setData(next);
+          setBoard(next);
           scheduleSaveBoard(next.columns, next.tasks);
         } catch (e) {
           console.error(e);
@@ -1773,7 +1493,7 @@ export default function App() {
                                   onClick={async () => {
                                     await supabase.auth.signOut();
                                     setCurrentProjectId("");
-                                    setData({ columns: [], tasks: [] });
+                                    setBoard({ columns: [], tasks: [] });
                                     setMobileMenuOpen(false);
                                   }}
                                 >
@@ -1945,7 +1665,7 @@ export default function App() {
                         onClick={async () => {
                           await supabase.auth.signOut();
                           setCurrentProjectId("");
-                          setData({ columns: [], tasks: [] });
+                          setBoard({ columns: [], tasks: [] });
                         }}
                       >
                         <LogOut className="h-4 w-4 mr-1" /> Sign Out
@@ -2208,7 +1928,7 @@ export default function App() {
               : [...columns, { id, name: col.name }];
 
             const next = { columns: nextCols, tasks };
-            setData(next);
+            setBoard(next);
 
             // If it was a NEW column (not rename), jump to it on mobile
             if (!exists && isMobile) {
