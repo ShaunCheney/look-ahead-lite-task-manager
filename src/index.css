@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===============================
+   iPhone / iOS horizontal scroll fix
+   =============================== */
+
+/* Strongest option on modern browsers */
+@supports (overflow: clip) {
+  html,
+  body {
+    overflow-x: clip;
+  }
+  #root {
+    overflow-x: clip;
+  }
+}
+
+/* Fallback for older Safari */
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  -webkit-overflow-scrolling: touch;
+
+  /* Prevent subtle horizontal “pan” on iOS */
+  touch-action: pan-y;
+}
+
+/* Root app container safety */
+#root {
+  width: 100%;
+  max-width: 100vw;
+  overflow-x: hidden;
+  touch-action: pan-y;
+}
+
+/* Make sure all layout elements respect viewport width */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* Prevent flex children from forcing overflow */
+.min-w-0 {
+  min-width: 0;
+}
+
+/* Images/SVG/canvas never exceed viewport */
+img,
+svg,
+canvas {
+  max-width: 100%;
+  height: auto;
+}
+
+/* IMPORTANT:
+   Tailwind's w-screen uses 100vw, which can cause a 1–3px overflow on iOS.
+   This neutralizes it to avoid that tiny side-scroll.
+*/
+.w-screen {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Extra guard: anything accidentally wider than the viewport gets clipped */
+body {
+  position: relative;
+}
+
+/* Optional: smoother mobile text sizing */
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Print safety (used by reports) */
+@media print {
+  html,
+  body,
+  #root {
+    overflow: visible !important;
+  }
+}
