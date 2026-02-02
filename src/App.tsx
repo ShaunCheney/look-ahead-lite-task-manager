@@ -1882,11 +1882,21 @@ export default function App() {
                                 </Button>
                               </div>
 
-                              <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                                {items.map((t) => (
-                                  <SortableTask key={t.id} task={t} onEdit={(tk) => setOpenTask(tk)} onDelete={(id) => deleteTask(id)} />
-                                ))}
-                              </SortableContext>
+                              <ColumnDropZone columnId={c.id}>
+                                <div className="min-h-[80px]">
+                                  <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                                    {items.length === 0 ? (
+                                      <div className="h-12 border border-dashed rounded-md text-xs opacity-60 flex items-center justify-center">
+                                        Drop task here
+                                      </div>
+                                    ) : (
+                                      items.map((t) => (
+                                        <SortableTask key={t.id} task={t} onEdit={(tk) => setOpenTask(tk)} onDelete={(id) => deleteTask(id)} />
+                                      ))
+                                    )}
+                                  </SortableContext>
+                                </div>
+                              </ColumnDropZone>
 
                               <div className="mt-3 flex justify-end">
                                 <Button
