@@ -1347,8 +1347,8 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-white overflow-x-hidden max-w-[100vw]">
-      <div className="w-screen max-w-[100vw] mx-auto px-3 sm:px-6 py-4 space-y-4 overflow-x-hidden">
+    <div className="min-h-screen w-full max-w-[100vw] bg-white overflow-x-hidden">
+      <div className="w-full max-w-[100vw] mx-auto px-3 sm:px-6 py-4 space-y-4 overflow-x-hidden">
         <header className="sticky top-0 z-20 bg-white pb-3 overflow-x-hidden">
           <div className="flex flex-wrap items-start gap-3 max-w-[100vw] min-w-0">
             <div className="flex flex-col gap-2 w-full max-w-[100vw] min-w-0">
@@ -1837,7 +1837,7 @@ export default function App() {
                                 <>
                                   {/* Tasks Container - Indented */}
                                   <ColumnDropZone columnId={c.id}>
-                                    <div className="ml-6 space-y-2 mb-4">
+                                    <div className="w-full pl-6 space-y-2 mb-4">
                                       <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                                         {items.map((t) => (
                                           <SortableTask
