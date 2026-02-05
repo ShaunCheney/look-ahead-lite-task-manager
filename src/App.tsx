@@ -6,7 +6,6 @@ import { DndContext, closestCenter, MouseSensor, TouchSensor, useDroppable, useS
 import {
   SortableContext,
   verticalListSortingStrategy,
-  horizontalListSortingStrategy,
   useSortable,
 } from "@dnd-kit/sortable";
 import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
@@ -25,15 +24,14 @@ import {
   Upload,
   FileText,
   Trash2,
-  ChevronLeft,
   ChevronRight,
+  ChevronDown,
   LogOut,
   Menu
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -61,7 +59,6 @@ export type TaskStatus =
 interface Task {
   id: string;
   title: string;
-  notes?: string;
   columnId: string;
   status: TaskStatus;
   workDays?: number;
@@ -197,66 +194,158 @@ function SortableTask({
   task,
   onEdit,
   onDelete,
+  onRename,
 }: {
   task: Task;
   onEdit: (t: Task) => void;
   onDelete: (id: string) => void;
+  onRename: (t: Task) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: task.id });
   const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition };
   const tone = getStatusClasses(task.status);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(task.title);
+
+  useEffect(() => {
+    if (!isEditingTitle) setTitleDraft(task.title);
+  }, [task.title, isEditingTitle]);
+
+  function commitTitle() {
+    const nextTitle = titleDraft.trim();
+    if (!nextTitle) {
+      setTitleDraft(task.title);
+      setIsEditingTitle(false);
+      return;
+    }
+    if (nextTitle !== task.title) {
+      onRename({ ...task, title: nextTitle });
+    }
+    setIsEditingTitle(false);
+  }
 
   return (
-    <div ref={setNodeRef} style={style} className="mb-3">
-      <Card className={`rounded-2xl shadow-sm border ${tone.card}`}>
-        <CardContent className="p-3">
-          <div className="flex justify-between items-center gap-2 mb-2">
-            <div
-              className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/60"
-              {...attributes}
-              {...listeners}
-            >
-              <GripVertical className="h-3 w-3" />
-              <span>Move</span>
+    <div ref={setNodeRef} style={style} className="mb-2">
+      <Card className={`rounded-lg shadow-sm border text-sm ${tone.card}`}>
+        <CardContent className="p-2">
+          <div className="flex justify-between items-start gap-2 mb-1">
+            <div className="flex items-center gap-2 min-w-0">
+              <div
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-dashed border-neutral-300 text-[10px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/60 flex-shrink-0"
+                {...attributes}
+                {...listeners}
+              >
+                <GripVertical className="h-2.5 w-2.5" />
+              </div>
+              <div className="flex flex-wrap items-center gap-1 min-w-0">
+                <Badge className={`rounded-full text-[9px] px-1.5 py-0.5 border pointer-events-none ${tone.chip}`}>
+                  {task.status}
+                </Badge>
+                {typeof task.workDays === "number" && (
+                  <Badge className={`rounded-full text-[9px] px-1.5 py-0.5 border pointer-events-none ${tone.chip}`}>
+                    {task.workDays}d
+                  </Badge>
+                )}
+              </div>
             </div>
-            <div className="flex gap-2">
-              <Button variant="secondary" size="sm" onClick={() => onEdit(task)}>
-                <Pencil className="h-4 w-4 mr-1" /> Edit
+            <div className="flex gap-1 flex-shrink-0">
+              <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs" onClick={() => onEdit(task)}>
+                <Pencil className="h-3 w-3" />
               </Button>
-              <Button variant="secondary" size="sm" onClick={() => onDelete(task.id)}>
-                <Trash2 className="h-4 w-4 mr-1" /> Delete
+              <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs" onClick={() => onDelete(task.id)}>
+                <Trash2 className="h-3 w-3" />
               </Button>
             </div>
           </div>
 
           <div className="min-w-0 w-full">
-            <div className="text-sm font-semibold leading-tight break-words">{task.title}</div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <Badge className={`rounded-full text-[10px] px-2 py-0.5 border pointer-events-none ${tone.chip}`}>
-                {task.status}
-              </Badge>
-              {typeof task.workDays === "number" && (
-                <Badge className={`rounded-full text-[10px] px-2 py-0.5 border pointer-events-none ${tone.chip}`}>
-                  {task.workDays}d
-                </Badge>
-              )}
-            </div>
+            {isEditingTitle ? (
+              <Input
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={commitTitle}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    commitTitle();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    setTitleDraft(task.title);
+                    setIsEditingTitle(false);
+                  }
+                }}
+                className="h-7 px-2 text-sm font-semibold w-full"
+                autoFocus
+              />
+            ) : (
+              <button
+                type="button"
+                className="text-left text-sm font-semibold leading-tight break-words whitespace-normal hover:underline w-full"
+                onClick={() => setIsEditingTitle(true)}
+                title="Click to rename"
+              >
+                {task.title}
+              </button>
+            )}
           </div>
 
-          {task.notes && (
-            <div className="mt-2 text-xs opacity-80 whitespace-pre-wrap break-words w-full">
-              {task.notes}
-            </div>
-          )}
         </CardContent>
       </Card>
     </div>
   );
 }
 
+function QuickAddTask({
+  columnId,
+  onCreate,
+}: {
+  columnId: string;
+  onCreate: (columnId: string, title: string) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const ignoreBlurRef = useRef(false);
+
+  function commit({ keepFocus }: { keepFocus: boolean }) {
+    const title = draft.trim();
+    if (!title) {
+      if (!keepFocus) setDraft("");
+      return;
+    }
+    onCreate(columnId, title);
+    setDraft("");
+  }
+
+  return (
+    <Input
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit({ keepFocus: true });
+          return;
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          commit({ keepFocus: true });
+        }
+      }}
+      onBlur={() => {
+        if (ignoreBlurRef.current) {
+          ignoreBlurRef.current = false;
+          return;
+        }
+        if (draft.trim()) commit({ keepFocus: false });
+      }}
+      placeholder="+ Add task"
+      className="w-full min-h-[56px] rounded-lg border border-dashed border-neutral-300 bg-neutral-50/60 text-left px-3 py-2 text-xs text-neutral-700 hover:bg-neutral-100 focus-visible:ring-0 focus-visible:ring-offset-0"
+    />
+  );
+}
+
 /**
- * Desktop-only: makes the whole column sortable, and lets us attach the drag handle
- * specifically to the "Move Column" pill.
+ * Makes the whole phase sortable, and lets us attach the drag handle
+ * specifically to the "Move Phase" pill.
  */
 function SortableColumn({
   column,
@@ -311,76 +400,6 @@ function ColumnDropZone({
   );
 }
 
-
-function MobileColumnPanel({
-  column,
-  items,
-  onAddTask,
-  onEditTask,
-  onDeleteTask,
-  onRenameColumn,
-  onRemoveColumn,
-}: {
-  column: Column;
-  items: Task[];
-  onAddTask: (columnId: string) => void;
-  onEditTask: (t: Task) => void;
-  onDeleteTask: (id: string) => void;
-  onRenameColumn: (c: Column) => void;
-  onRemoveColumn: (id: string) => void;
-}) {
-  return (
-    <div className="w-full">
-      <div className="bg-white rounded-2xl shadow p-4 border transition-colors">
-        {/* Row 1: centered title (wraps) */}
-        <div className="mb-3">
-          <div
-            className="text-sm font-semibold opacity-80 hover:underline cursor-pointer text-center break-words whitespace-normal"
-            onClick={() => onRenameColumn(column)}
-          >
-            {column.name}
-          </div>
-        </div>
-
-        {/* Row 2: (Mobile) Add Task only — Move Column removed */}
-        <div className="flex items-center justify-end gap-2 mb-3">
-          <Button size="sm" className="rounded-full shrink-0" onClick={() => onAddTask(column.id)}>
-            <Plus className="h-4 w-4 mr-1" /> Add Task
-          </Button>
-        </div>
-
-        <ColumnDropZone columnId={column.id}>
-  <div className="min-h-[80px]">
-    <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-      {items.length === 0 ? (
-        <div className="h-12 border border-dashed rounded-md text-xs opacity-60 flex items-center justify-center">
-          Drop task here
-        </div>
-      ) : (
-        items.map((t) => (
-          <SortableTask key={t.id} task={t} onEdit={onEditTask} onDelete={onDeleteTask} />
-        ))
-      )}
-    </SortableContext>
-  </div>
-</ColumnDropZone>
-
-
-        {/* Bottom: Remove Column */}
-        <div className="mt-3 flex justify-end">
-          <Button
-            variant="secondary"
-            size="sm"
-            className="rounded-full"
-            onClick={() => onRemoveColumn(column.id)}
-          >
-            Remove Column
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function TaskEditor({
   openTask,
@@ -446,14 +465,6 @@ function TaskEditor({
               placeholder="e.g., 3"
             />
           </div>
-          <div>
-            <label className="text-xs font-medium">Notes</label>
-            <Textarea
-              value={draft.notes || ""}
-              onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
-              placeholder="Short details, constraints, who, etc."
-            />
-          </div>
           <div className="pt-2 flex gap-2">
             <Button
               className="rounded-2xl"
@@ -487,11 +498,17 @@ function ColumnEditor({
   const [name, setName] = useState<string>(initial?.name || "");
   useEffect(() => setName(initial?.name || ""), [initial]);
 
+  function handleSave() {
+    const id = initial?.id || uuid();
+    onSave({ id, name: name.trim() || "Untitled", linkAfterId: initial?.linkAfterId });
+    onClose();
+  }
+
   return (
     <Sheet open onOpenChange={(v) => { if (!v) onClose(); }}>
       <SheetContent className="w-full sm:max-w-md bg-white">
         <SheetHeader>
-          <SheetTitle>{initial?.id ? "Rename Column" : "New Column"}</SheetTitle>
+          <SheetTitle>{initial?.id ? "Rename Phase" : "New Phase"}</SheetTitle>
         </SheetHeader>
         <div className="mt-6 space-y-4">
           <div>
@@ -499,17 +516,17 @@ function ColumnEditor({
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleSave();
+                }
+              }}
               placeholder="e.g., Site Work"
             />
           </div>
           <div className="pt-2 flex gap-2">
-            <Button
-              onClick={() => {
-                const id = initial?.id || uuid();
-                onSave({ id, name: name.trim() || "Untitled", linkAfterId: initial?.linkAfterId });
-                onClose();
-              }}
-            >
+            <Button onClick={handleSave}>
               Save
             </Button>
             <Button variant="secondary" onClick={onClose}>
@@ -545,7 +562,6 @@ function buildThreeWeekText(tasks: Task[], columns: Column[]): string {
     } else {
       for (const t of items) {
         let line = `- ${t.title}`;
-        if (t.notes) line += ` – ${t.notes}`;
         const meta: string[] = [];
         const cn = colName(t.columnId);
         if (cn) meta.push(cn);
@@ -577,7 +593,6 @@ function buildOwnerUpdateText(tasks: Task[], columns: Column[]): string {
     } else {
       for (const t of items) {
         let line = `- ${t.title}`;
-        if (t.notes) line += ` – ${t.notes}`;
         const meta: string[] = [];
         const cn = colName(t.columnId);
         if (cn) meta.push(cn);
@@ -717,7 +732,6 @@ function ThreeWeekReport({ tasks, columns, onClose }: { tasks: Task[]; columns: 
                     {items.map((t) => (
                       <li key={t.id} className="text-sm">
                         <span className="font-medium">{t.title}</span>
-                        {t.notes && <span className="opacity-60"> - {t.notes}</span>}
                         <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-neutral-100 border">
                           {colName(t.columnId)}
                         </span>
@@ -772,7 +786,6 @@ function OwnerUpdateReport({ tasks, columns, onClose }: { tasks: Task[]; columns
                 {completed.map((t) => (
                   <li key={t.id} className="text-sm">
                     <span className="font-medium">{t.title}</span>
-                    {t.notes && <span className="opacity-60"> - {t.notes}</span>}
                     <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-neutral-100 border">
                       {colName(t.columnId)}
                     </span>
@@ -796,7 +809,6 @@ function OwnerUpdateReport({ tasks, columns, onClose }: { tasks: Task[]; columns
                 {inProcess.map((t) => (
                   <li key={t.id} className="text-sm">
                     <span className="font-medium">{t.title}</span>
-                    {t.notes && <span className="opacity-60"> - {t.notes}</span>}
                     <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-neutral-100 border">
                       {colName(t.columnId)}
                     </span>
@@ -820,7 +832,6 @@ function OwnerUpdateReport({ tasks, columns, onClose }: { tasks: Task[]; columns
                 {upcoming.map((t) => (
                   <li key={t.id} className="text-sm">
                     <span className="font-medium">{t.title}</span>
-                    {t.notes && <span className="opacity-60"> - {t.notes}</span>}
                     <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-neutral-100 border">
                       {colName(t.columnId)}
                     </span>
@@ -936,19 +947,13 @@ export default function App() {
   const [showReport, setShowReport] = useState(false);
   const [showOwner, setShowOwner] = useState(false);
   const [showSummary, setShowSummary] = useState(false);
+  const [collapsedPhaseIds, setCollapsedPhaseIds] = useState<Set<string>>(() => new Set());
 
-  // mobile: current column
-  const [activeColIndex, setActiveColIndex] = useState(0);
 
   // mobile: hamburger menu open
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // when adding a new column on mobile, jump to it (prevents “weird scrolling” feeling)
-  const [pendingNewColId, setPendingNewColId] = useState<string | null>(null);
 
-  // swipe detection
-  const touchStartX = useRef<number | null>(null);
-  const touchStartY = useRef<number | null>(null);
 
   const isAuthed = !!authUserId;
 
@@ -957,6 +962,27 @@ export default function App() {
     useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
+
+  function isPhaseCollapsed(id: string) {
+    return collapsedPhaseIds.has(id);
+  }
+
+  function togglePhaseCollapsed(id: string) {
+    setCollapsedPhaseIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function collapseAllPhases() {
+    setCollapsedPhaseIds(new Set(columns.map((c) => c.id)));
+  }
+
+  function expandAllPhases() {
+    setCollapsedPhaseIds(new Set());
+  }
 
 
 
@@ -1045,24 +1071,6 @@ export default function App() {
   }, [authUserId]);
 
   // Board loading handled by `useBoard` hook
-  // Keep mobile column index valid
-  useEffect(() => {
-    setActiveColIndex((i) => {
-      if (!columns.length) return 0;
-      return Math.min(Math.max(i, 0), columns.length - 1);
-    });
-  }, [columns.length]);
-
-  // After creating a new column, jump the mobile view to it (feels stable on iPhone)
-  useEffect(() => {
-    if (!pendingNewColId) return;
-    const idx = columns.findIndex(c => c.id === pendingNewColId);
-    if (idx >= 0) {
-      setActiveColIndex(idx);
-      setPendingNewColId(null);
-    }
-  }, [pendingNewColId, columns]);
-
   // `tasksByColumn` provided by `useBoard`
 
   // ================= Project CRUD =================
@@ -1186,7 +1194,6 @@ export default function App() {
       project_id: inserted.id,
       column_id: colMap.get(t.columnId) || t.columnId,
       title: t.title,
-      notes: t.notes || null,
       status: t.status,
       work_days: typeof t.workDays === "number" ? t.workDays : null,
       sort_order: perColOrder[t.id] ?? 0,
@@ -1226,7 +1233,7 @@ export default function App() {
     await refreshProjectsAndSelect(nextId);
   }
 
-  // ================= Columns / Tasks =================
+  // ================= Phases / Tasks =================
   
 
   function addColumn() {
@@ -1237,7 +1244,7 @@ export default function App() {
   
 
   function handleExportCsv() {
-    const header = ["Column", "Title", "Status", "WorkDays", "Notes"];
+    const header = ["Phase", "Title", "Status", "WorkDays"];
     const colName = (id: string) => columns.find(c => c.id === id)?.name || "";
     const rows = [header];
     for (const t of tasks) {
@@ -1245,8 +1252,7 @@ export default function App() {
         colName(t.columnId),
         t.title,
         t.status,
-        typeof t.workDays === "number" ? String(t.workDays) : "",
-        t.notes || ""
+        typeof t.workDays === "number" ? String(t.workDays) : ""
       ]);
     }
     const csv = rows.map(r => r.map(escapeCsv).join(",")).join("\n");
@@ -1273,14 +1279,16 @@ export default function App() {
           const rows = parseCsv(text);
           if (!rows.length) return;
           const [header, ...dataRows] = rows;
-          const colIndex = header.findIndex(h => h.toLowerCase() === "column");
+          const colIndex = header.findIndex(h => {
+            const key = h.toLowerCase();
+            return key === "phase" || key === "column";
+          });
           const titleIndex = header.findIndex(h => h.toLowerCase() === "title");
           const statusIndex = header.findIndex(h => h.toLowerCase() === "status");
           const daysIndex = header.findIndex(h => h.toLowerCase() === "workdays");
-          const notesIndex = header.findIndex(h => h.toLowerCase() === "notes");
 
           if (titleIndex === -1 || colIndex === -1) {
-            alert("CSV must include at least 'Column' and 'Title' headers.");
+            alert("CSV must include at least 'Phase' (or 'Column') and 'Title' headers.");
             return;
           }
 
@@ -1304,15 +1312,12 @@ export default function App() {
             const daysStr = daysIndex >= 0 ? row[daysIndex] || "" : "";
             const daysNum = daysStr ? Math.max(0, Math.floor(Number(daysStr))) : undefined;
 
-            const notes = notesIndex >= 0 ? row[notesIndex] || "" : "";
-
             newTasks.push({
               id: uuid(),
               title,
               columnId: column.id,
               status,
               workDays: daysNum,
-              notes: notes || undefined,
             });
           }
 
@@ -1340,41 +1345,6 @@ export default function App() {
     else if (value === "ownerUpdate") setShowOwner(true);
     else if (value === "taskSummary") setShowSummary(true);
   }
-
-  // ===== Mobile swipe handlers =====
-  function goPrevColumn() {
-    setActiveColIndex((i) => Math.max(0, i - 1));
-  }
-  function goNextColumn() {
-    setActiveColIndex((i) => Math.min(columns.length - 1, i + 1));
-  }
-
-  function onMobileTouchStart(e: React.TouchEvent) {
-    touchStartX.current = e.touches[0]?.clientX ?? null;
-    touchStartY.current = e.touches[0]?.clientY ?? null;
-  }
-
-  function onMobileTouchEnd(e: React.TouchEvent) {
-    const startX = touchStartX.current;
-    const startY = touchStartY.current;
-    if (startX == null || startY == null) return;
-
-    const endX = e.changedTouches[0]?.clientX ?? startX;
-    const endY = e.changedTouches[0]?.clientY ?? startY;
-
-    const dx = endX - startX;
-    const dy = endY - startY;
-
-    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-      if (dx < 0) goNextColumn();
-      else goPrevColumn();
-    }
-
-    touchStartX.current = null;
-    touchStartY.current = null;
-  }
-
-  const activeColumn = columns[activeColIndex];
 
   return (
     <div className="min-h-screen bg-white overflow-x-hidden max-w-[100vw]">
@@ -1550,9 +1520,9 @@ export default function App() {
                             </Select>
                           </div>
 
-                          {/* Columns */}
+                          {/* Phases */}
                           <div className="space-y-2">
-                            <div className="text-sm font-semibold">Columns</div>
+                            <div className="text-sm font-semibold">Phases</div>
                             <Button
                               className="rounded-full w-full justify-start bg-neutral-800 text-white hover:bg-neutral-700"
                               onClick={() => {
@@ -1561,7 +1531,29 @@ export default function App() {
                               }}
                               disabled={!currentProjectId || !isAuthed}
                             >
-                              <Plus className="h-4 w-4 mr-2" /> New Column
+                              <Plus className="h-4 w-4 mr-2" /> New Phase
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              className="rounded-full w-full justify-start"
+                              onClick={() => {
+                                collapseAllPhases();
+                                setMobileMenuOpen(false);
+                              }}
+                              disabled={columns.length === 0}
+                            >
+                              Collapse All
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              className="rounded-full w-full justify-start"
+                              onClick={() => {
+                                expandAllPhases();
+                                setMobileMenuOpen(false);
+                              }}
+                              disabled={columns.length === 0}
+                            >
+                              Expand All
                             </Button>
                           </div>
 
@@ -1740,7 +1732,7 @@ export default function App() {
                           onClick={addColumn}
                           disabled={!currentProjectId || !isAuthed}
                         >
-                          <Plus className="h-4 w-4 mr-1" /> New Column
+                          <Plus className="h-4 w-4 mr-1" /> New Phase
                         </Button>
                         <Button
                           variant="secondary"
@@ -1770,41 +1762,6 @@ export default function App() {
                 </>
               )}
 
-              {/* Mobile column nav stays visible under the mobile header, to keep the main screen clean */}
-              {isMobile && columns.length > 0 && (
-                <div className="flex items-center gap-2 pt-1">
-                  <Button variant="secondary" className="rounded-full" onClick={goPrevColumn} disabled={activeColIndex <= 0}>
-                    <ChevronLeft className="h-4 w-4" /> Prev
-                  </Button>
-
-                  <Select
-                    value={activeColumn?.id || ""}
-                    onValueChange={(id) => {
-                      const idx = columns.findIndex(c => c.id === id);
-                      if (idx >= 0) setActiveColIndex(idx);
-                    }}
-                  >
-                    <SelectTrigger className="flex-1 bg-white min-w-0">
-                      <SelectValue placeholder="Select column" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white">
-                      {columns.map(c => (
-                        <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  <Button variant="secondary" className="rounded-full" onClick={goNextColumn} disabled={activeColIndex >= columns.length - 1}>
-                    Next <ChevronRight className="h-4 w-4" />
-                  </Button>
-                </div>
-              )}
-
-              {isMobile && boardError && (
-                <div className="text-sm text-rose-600">
-                  {boardError}
-                </div>
-              )}
             </div>
           </div>
         </header>
@@ -1815,109 +1772,114 @@ export default function App() {
           onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}
         >
-          {isMobile ? (
-            <div
-              className="w-full bg-neutral-50 border rounded-2xl p-3 max-w-[100vw] overflow-x-hidden"
-              onTouchStart={onMobileTouchStart}
-              onTouchEnd={onMobileTouchEnd}
+          <div className="w-full border rounded-2xl bg-white p-4 sm:p-6">
+            <SortableContext
+              items={columns.map((c) => `col:${c.id}`)}
+              strategy={verticalListSortingStrategy}
             >
-              {!activeColumn ? (
-                <div className="text-sm opacity-60">No columns yet.</div>
-              ) : (
-                <MobileColumnPanel
-                  column={activeColumn}
-                  items={tasksByColumn[activeColumn.id] || []}
-                  onAddTask={(cid) => setOpenTask({ id: "", title: "", notes: "", columnId: cid, status: "Unassigned", workDays: undefined })}
-                  onEditTask={(t) => setOpenTask(t)}
-                  onDeleteTask={(id) => deleteTask(id)}
-                  onRenameColumn={(col) => setOpenColumn(col)}
-                  onRemoveColumn={(id) => removeColumn(id)}
-                />
-              )}
-            </div>
-          ) : (
-            <div className="w-full border rounded-2xl bg-neutral-50 p-3">
-              <SortableContext
-                items={columns.map((c) => `col:${c.id}`)}
-                strategy={horizontalListSortingStrategy}
-              >
-                <div className="flex flex-nowrap gap-4 w-full overflow-x-auto pb-2">
-                  {columns.map((c) => {
+              <div className="flex flex-col gap-2 w-full">
+                {columns.length === 0 ? (
+                  <div className="text-sm opacity-60">No phases yet.</div>
+                ) : (
+                  columns.map((c) => {
                     const items = tasksByColumn[c.id] || [];
                     return (
-                      <div key={c.id} className="w-[320px] flex-shrink-0">
+                      <div key={c.id} className="w-full">
                         <SortableColumn column={c}>
                           {({ setActivatorNodeRef, attributes, listeners }) => (
-                            <div className="bg-white rounded-2xl shadow p-4 min-h-[220px] border transition-colors">
-                              {/* Row 1: centered, wrapping title */}
-                              <div className="mb-2">
-                                <div
-                                  className="text-sm font-semibold opacity-80 hover:underline cursor-pointer text-center break-words whitespace-normal"
-                                  onClick={() => setOpenColumn(c)}
-                                >
-                                  {c.name}
-                                </div>
-                              </div>
-
-                              {/* Row 2: Move Column + Add Task (desktop only) */}
-                              <div className="flex items-center justify-between gap-2 mb-3">
-                                <div
-                                  ref={setActivatorNodeRef}
-                                  {...attributes}
-                                  {...listeners}
-                                  className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/60"
-                                  aria-label="Move Column"
-                                  title="Move Column"
-                                >
-                                  <GripVertical className="h-3 w-3" />
-                                  <span>Move Column</span>
-                                </div>
-
-                                <Button
-                                  size="sm"
-                                  className="rounded-full shrink-0"
-                                  onClick={() => setOpenTask({ id: "", title: "", notes: "", columnId: c.id, status: "Unassigned", workDays: undefined })}
-                                >
-                                  <Plus className="h-4 w-4 mr-1" /> Add Task
-                                </Button>
-                              </div>
-
-                              <ColumnDropZone columnId={c.id}>
-                                <div className="min-h-[80px]">
-                                  <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                                    {items.length === 0 ? (
-                                      <div className="h-12 border border-dashed rounded-md text-xs opacity-60 flex items-center justify-center">
-                                        Drop task here
-                                      </div>
+                            <div className="bg-transparent rounded-none shadow-none p-0 border-b border-neutral-200">
+                              {/* Phase Header as Section Title */}
+                              <div className="mb-3 pb-2 border-b-2 border-neutral-300">
+                                <div className="flex items-center gap-2">
+                                  <div
+                                    ref={setActivatorNodeRef}
+                                    {...attributes}
+                                    {...listeners}
+                                    className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/60"
+                                    aria-label="Move Phase"
+                                    title="Move Phase"
+                                  >
+                                    <GripVertical className="h-3 w-3" />
+                                  </div>
+                                  <div
+                                    className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
+                                    onClick={() => setOpenColumn(c)}
+                                  >
+                                    {c.name}
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-8 w-8 p-0"
+                                    onClick={() => togglePhaseCollapsed(c.id)}
+                                    title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                    aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                  >
+                                    {isPhaseCollapsed(c.id) ? (
+                                      <ChevronRight className="h-4 w-4" />
                                     ) : (
-                                      items.map((t) => (
-                                        <SortableTask key={t.id} task={t} onEdit={(tk) => setOpenTask(tk)} onDelete={(id) => deleteTask(id)} />
-                                      ))
+                                      <ChevronDown className="h-4 w-4" />
                                     )}
-                                  </SortableContext>
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-8 w-8 p-0"
+                                    onClick={() => setOpenTask({ id: "", title: "", columnId: c.id, status: "Unassigned", workDays: undefined })}
+                                    title="Add Task"
+                                  >
+                                    <Plus className="h-4 w-4" />
+                                  </Button>
                                 </div>
-                              </ColumnDropZone>
-
-                              <div className="mt-3 flex justify-end">
-                                <Button
-                                  variant="secondary"
-                                  size="sm"
-                                  className="rounded-full"
-                                  onClick={() => removeColumn(c.id)}
-                                >
-                                  Remove Column
-                                </Button>
                               </div>
+
+                              {!isPhaseCollapsed(c.id) && (
+                                <>
+                                  {/* Tasks Container - Indented */}
+                                  <ColumnDropZone columnId={c.id}>
+                                    <div className="ml-6 space-y-2 mb-4">
+                                      <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                                        {items.map((t) => (
+                                          <SortableTask
+                                            key={t.id}
+                                            task={t}
+                                            onEdit={(tk) => setOpenTask(tk)}
+                                            onDelete={(id) => deleteTask(id)}
+                                            onRename={saveTask}
+                                          />
+                                        ))}
+                                      </SortableContext>
+                                      <QuickAddTask
+                                        columnId={c.id}
+                                        onCreate={(columnId, title) =>
+                                          saveTask({ id: "", title, columnId, status: "Unassigned", workDays: undefined })
+                                        }
+                                      />
+                                    </div>
+                                  </ColumnDropZone>
+
+                                  <div className="flex justify-end mb-4">
+                                    <Button
+                                      variant="secondary"
+                                      size="sm"
+                                      className="text-xs"
+                                      onClick={() => removeColumn(c.id)}
+                                    >
+                                      <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
+                                    </Button>
+                                  </div>
+                                </>
+                              )}
                             </div>
                           )}
                         </SortableColumn>
                       </div>
                     );
-                  })}
-                </div>
-              </SortableContext>
-            </div>
-          )}
+                  })
+                )}
+              </div>
+            </SortableContext>
+          </div>
         </DndContext>
       </div>
 
@@ -1939,11 +1901,6 @@ export default function App() {
 
             const next = { columns: nextCols, tasks };
             setBoard(next);
-
-            // If it was a NEW column (not rename), jump to it on mobile
-            if (!exists && isMobile) {
-              setPendingNewColId(id);
-            }
 
             scheduleSaveBoard(next.columns, next.tasks);
           }}
