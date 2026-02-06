@@ -192,6 +192,8 @@ function SortableTask({
   const tone = getStatusClasses(task.status);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
+  const photo = task.photo;
+  const canViewPhoto = !!photo && !!onViewPhoto;
 
   useEffect(() => {
     if (!isEditingTitle) setTitleDraft(task.title);
@@ -235,12 +237,15 @@ function SortableTask({
               </div>
             </div>
             <div className="flex gap-1 flex-shrink-0">
-              {task.photo && (
+              {canViewPhoto && (
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-6 px-1.5 text-xs"
-                  onClick={() => onViewPhoto?.(task.photo, task)}
+                  onClick={() => {
+                    if (!photo || !onViewPhoto) return;
+                    onViewPhoto(photo, task);
+                  }}
                   title="View photo"
                 >
                   <Camera className="h-3 w-3" />
