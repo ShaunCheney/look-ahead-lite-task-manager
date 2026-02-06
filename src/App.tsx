@@ -1770,8 +1770,10 @@ export default function App() {
     title: string;
     phaseId: string;
     assignedUserId: string;
+    status: TaskStatus;
     startDate?: string;
     endDate?: string;
+    workDays?: number;
     photo: PhotoAttachment;
   }) {
     const assignedUserId = payload.assignedUserId || authUserId || "";
@@ -1784,8 +1786,8 @@ export default function App() {
       startDate: payload.startDate,
       endDate: payload.endDate,
       photo: payload.photo,
-      status: "Unassigned",
-      workDays: undefined,
+      status: payload.status || "Unassigned",
+      workDays: payload.workDays,
     });
   }
 
@@ -2335,6 +2337,7 @@ export default function App() {
         usersLoading={usersLoading}
         defaultPhaseId={photoDefaults.phaseId}
         defaultAssignedUserId={photoDefaults.assignedUserId}
+        statusOptions={MANUAL_STATUS_OPTIONS}
         onClose={handleClosePhotoModal}
         onSave={handleSavePhotoTask}
         onRequestPhoto={requestCamera}

@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Mic, MicOff, RotateCw, X } from "lucide-react";
+import { Camera, RotateCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
-import type { PhotoAttachment } from "@/board/boardService";
+import type { PhotoAttachment, TaskStatus } from "@/board/boardService";
 
 export interface UserOption {
   id: string;
@@ -42,117 +41,6 @@ export function CameraTaskButton({ onRequestPhoto, disabled }: CameraTaskButtonP
   );
 }
 
-type VoiceInputProps = {
-  label?: string;
-  value: string;
-  onChange: (value: string) => void;
-  placeholder?: string;
-};
-
-export function VoiceInput({ label = "Task Description", value, onChange, placeholder }: VoiceInputProps) {
-  const [supported, setSupported] = useState(false);
-  const [listening, setListening] = useState(false);
-  const recognitionRef = useRef<any>(null);
-  const baseRef = useRef("");
-
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    setSupported(true);
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-
-    recognition.onresult = (event: any) => {
-      let interim = "";
-      let final = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const res = event.results[i];
-        if (res.isFinal) final += res[0].transcript;
-        else interim += res[0].transcript;
-      }
-      const combined = [baseRef.current, final, interim].filter(Boolean).join(" ");
-      const next = combined.replace(/\s+/g, " ").trim();
-      onChange(next);
-      if (final) {
-        baseRef.current = next;
-      }
-    };
-
-    recognition.onerror = () => setListening(false);
-    recognition.onend = () => setListening(false);
-
-    recognitionRef.current = recognition;
-    return () => {
-      recognition.onresult = null;
-      recognition.onerror = null;
-      recognition.onend = null;
-      try {
-        recognition.stop();
-      } catch {
-        // no-op
-      }
-    };
-  }, [onChange]);
-
-  function toggleListening() {
-    if (!supported) return;
-    if (listening) {
-      try {
-        recognitionRef.current?.stop();
-      } catch {
-        // no-op
-      }
-      setListening(false);
-      return;
-    }
-    baseRef.current = value;
-    try {
-      recognitionRef.current?.start();
-      setListening(true);
-    } catch {
-      // no-op
-    }
-  }
-
-  return (
-    <div className="space-y-2">
-      <label className="text-sm font-semibold">{label}</label>
-      <div className="flex items-start gap-2">
-        <Textarea
-          value={value}
-          onChange={(e) => {
-            const next = e.target.value;
-            onChange(next);
-            if (listening) baseRef.current = next;
-          }}
-          placeholder={placeholder || "Describe the task..."}
-          rows={3}
-          className="text-base"
-        />
-        <Button
-          type="button"
-          variant={listening ? "default" : "secondary"}
-          className="h-12 w-12 rounded-full shrink-0"
-          onClick={toggleListening}
-          aria-pressed={listening}
-          title={listening ? "Stop dictation" : "Start dictation"}
-          disabled={!supported}
-        >
-          {listening ? <MicOff className="h-5 w-5" /> : <Mic className="h-5 w-5" />}
-        </Button>
-      </div>
-      {!supported && (
-        <div className="text-xs text-neutral-500">
-          Dictation isn't supported on this device.
-        </div>
-      )}
-    </div>
-  );
-}
-
 type UserSelectDropdownProps = {
   users: UserOption[];
   value: string;
@@ -183,39 +71,29 @@ export function UserSelectDropdown({ users, value, onChange, disabled, loading }
   );
 }
 
-type DateRangePickerProps = {
-  startDate: string;
-  endDate: string;
-  onStartDateChange: (value: string) => void;
-  onEndDateChange: (value: string) => void;
-};
+function toIsoDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
-export function DateRangePicker({ startDate, endDate, onStartDateChange, onEndDateChange }: DateRangePickerProps) {
-  return (
-    <div className="space-y-2">
-      <div className="text-sm font-semibold">Dates</div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-neutral-600">Start Date</label>
-          <Input
-            type="date"
-            value={startDate}
-            onChange={(e) => onStartDateChange(e.target.value)}
-            className="h-12 text-base bg-white"
-          />
-        </div>
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-neutral-600">End Date</label>
-          <Input
-            type="date"
-            value={endDate}
-            onChange={(e) => onEndDateChange(e.target.value)}
-            className="h-12 text-base bg-white"
-          />
-        </div>
-      </div>
-    </div>
-  );
+function parseDateInput(value: string): Date | null {
+  if (!value) return null;
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day);
+}
+
+function computeEndDate(startDateIso: string, workDays?: number): string | undefined {
+  if (typeof workDays !== "number") return undefined;
+  const start = parseDateInput(startDateIso);
+  if (!start) return undefined;
+  const safeDays = Math.max(0, Math.floor(workDays));
+  if (safeDays <= 0) return toIsoDateString(start);
+  const end = new Date(start);
+  end.setDate(start.getDate() + safeDays - 1);
+  return toIsoDateString(end);
 }
 
 type PhotoTaskModalProps = {
@@ -228,13 +106,16 @@ type PhotoTaskModalProps = {
   usersLoading?: boolean;
   defaultPhaseId?: string;
   defaultAssignedUserId?: string;
+  statusOptions: TaskStatus[];
   onClose: () => void;
   onSave: (payload: {
     title: string;
     phaseId: string;
     assignedUserId: string;
+    status: TaskStatus;
     startDate?: string;
     endDate?: string;
+    workDays?: number;
     photo: PhotoAttachment;
   }) => void;
   onRequestPhoto: () => void;
@@ -252,6 +133,7 @@ export function PhotoTaskModal({
   usersLoading,
   defaultPhaseId,
   defaultAssignedUserId,
+  statusOptions,
   onClose,
   onSave,
   onRequestPhoto,
@@ -261,8 +143,10 @@ export function PhotoTaskModal({
   const [title, setTitle] = useState("");
   const [phaseId, setPhaseId] = useState(defaultPhaseId || "");
   const [assignedUserId, setAssignedUserId] = useState(defaultAssignedUserId || "");
+  const [status, setStatus] = useState<TaskStatus>("Unassigned");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [workDays, setWorkDays] = useState<number | undefined>(undefined);
   const wasOpenRef = useRef(false);
 
   const displayPhoto = photoPreviewUri || photo?.uri || "";
@@ -274,6 +158,8 @@ export function PhotoTaskModal({
     setTitle("");
     setStartDate("");
     setEndDate("");
+    setWorkDays(undefined);
+    setStatus("Unassigned");
     setPhaseId(defaultPhaseId || phaseOptions[0]?.id || "");
     setAssignedUserId(defaultAssignedUserId || users[0]?.id || "");
   }
@@ -304,6 +190,18 @@ export function PhotoTaskModal({
       }
     }
   }, [assignedUserId, defaultAssignedUserId, users, onAssignedChange]);
+
+  useEffect(() => {
+    if (!open) return;
+    const bodyOverflow = document.body.style.overflow;
+    const htmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = bodyOverflow;
+      document.documentElement.style.overflow = htmlOverflow;
+    };
+  }, [open]);
 
   if (!open) return null;
 
@@ -357,15 +255,31 @@ export function PhotoTaskModal({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        <VoiceInput value={title} onChange={setTitle} />
+      <div
+        className="flex-1 overflow-y-auto px-4 py-4 space-y-4"
+        style={{ WebkitOverflowScrolling: "touch" }}
+      >
+        <div className="space-y-2">
+          <label className="text-sm font-semibold">Title</label>
+          <Input
+            autoFocus
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g., Call vendor / Order material"
+            className="h-12 text-base bg-white"
+          />
+        </div>
 
         <div className="space-y-2">
           <label className="text-sm font-semibold">Phase</label>
-          <Select value={phaseId} onValueChange={(val) => {
-            setPhaseId(val);
-            onPhaseChange?.(val);
-          }}>
+          <Select
+            value={phaseId}
+            onValueChange={(val) => {
+              setPhaseId(val);
+              onPhaseChange?.(val);
+            }}
+            disabled={!phaseOptions.length}
+          >
             <SelectTrigger className="h-12 text-base bg-white">
               <SelectValue placeholder={phaseOptions.length ? "Select phase" : "No phases"} />
             </SelectTrigger>
@@ -392,38 +306,116 @@ export function PhotoTaskModal({
           loading={usersLoading}
         />
 
-        <DateRangePicker
-          startDate={startDate}
-          endDate={endDate}
-          onStartDateChange={setStartDate}
-          onEndDateChange={setEndDate}
-        />
+        <div className="space-y-2">
+          <label className="text-sm font-semibold">Status</label>
+          <Select
+            value={status}
+            onValueChange={(val) => setStatus(val as TaskStatus)}
+          >
+            <SelectTrigger className="h-12 text-base bg-white">
+              <SelectValue placeholder="Select status" />
+            </SelectTrigger>
+            <SelectContent className="bg-white">
+              {statusOptions.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="space-y-2">
+          <div className="text-sm font-semibold">Dates</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-neutral-600">Start Date</label>
+              <Input
+                type="date"
+                value={startDate}
+                onChange={(e) => {
+                  const nextStartDate = e.target.value;
+                  let nextEndDate = endDate;
+                  if (nextStartDate && typeof workDays === "number") {
+                    nextEndDate = computeEndDate(nextStartDate, workDays) ?? nextEndDate;
+                  }
+                  setStartDate(nextStartDate);
+                  setEndDate(nextEndDate);
+                }}
+                className="h-12 text-base bg-white"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-neutral-600">End Date</label>
+              <Input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                className="h-12 text-base bg-white"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-semibold">Work days</label>
+          <Input
+            type="number"
+            min={0}
+            step={1}
+            value={typeof workDays === "number" ? String(workDays) : ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              const n = v === "" ? undefined : Math.max(0, Math.floor(Number(v)));
+              let nextEndDate = endDate;
+              if (startDate && typeof n === "number") {
+                nextEndDate = computeEndDate(startDate, n) ?? nextEndDate;
+              }
+              setWorkDays(n);
+              setEndDate(nextEndDate);
+            }}
+            placeholder="e.g., 3"
+            className="h-12 text-base bg-white"
+          />
+        </div>
       </div>
 
       <div
         className="sticky bottom-0 z-20 border-t border-neutral-200 bg-white p-4"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 12px)" }}
       >
-        <Button
-          type="button"
-          className="w-full h-12 text-base rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
-          onClick={() => {
-            if (!photo) return;
-            onSave({
-              title: title.trim(),
-              phaseId,
-              assignedUserId,
-              startDate: startDate || undefined,
-              endDate: endDate || undefined,
-              photo,
-            });
-            resetInputs();
-            onRequestPhoto();
-          }}
-          disabled={!canSave}
-        >
-          Save Task
-        </Button>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <Button
+            type="button"
+            className="w-full h-12 text-base rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
+            onClick={() => {
+              if (!photo) return;
+              onSave({
+                title: title.trim(),
+                phaseId,
+                assignedUserId,
+                status,
+                startDate: startDate || undefined,
+                endDate: endDate || undefined,
+                workDays,
+                photo,
+              });
+              resetInputs();
+              onClose();
+            }}
+            disabled={!canSave}
+          >
+            Save Task
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full h-12 text-base rounded-full"
+            onClick={onClose}
+          >
+            Cancel
+          </Button>
+        </div>
       </div>
     </div>
   );
