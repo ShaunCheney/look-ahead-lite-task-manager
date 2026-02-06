@@ -87,6 +87,9 @@ export function TaskPhotoViewer({ open, photos = [], initialIndex = 0, onClose }
                 src={photo.uri}
                 alt="Task attachment"
                 className="w-full h-auto object-contain"
+                // Lazy decode to keep initial list rendering fast.
+                loading="lazy"
+                decoding="async"
               />
             </div>
           ))}

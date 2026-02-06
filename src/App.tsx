@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { v4 as uuid } from "uuid";
 import {
   DndContext,
@@ -343,16 +343,7 @@ function useIsMobile(breakpointPx = 768) {
 }
 
 // ================= Reusable UI =================
-function TaskCard({
-  task,
-  displayStatus,
-  tone,
-  onEdit,
-  onDelete,
-  onRename,
-  onViewPhoto,
-  assignedLabel,
-}: {
+type TaskCardProps = {
   task: Task;
   displayStatus: TaskStatus;
   tone: ReturnType<typeof getStatusClasses>;
@@ -361,7 +352,18 @@ function TaskCard({
   onRename: (t: Task) => void;
   onViewPhoto?: (photos: PhotoAttachment[], startIndex: number) => void;
   assignedLabel?: string;
-}) {
+};
+
+const TaskCard = memo(function TaskCard({
+  task,
+  displayStatus,
+  tone,
+  onEdit,
+  onDelete,
+  onRename,
+  onViewPhoto,
+  assignedLabel,
+}: TaskCardProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
   const photos = task.photos || [];
@@ -435,6 +437,7 @@ function TaskCard({
             </div>
           </div>
 
+          {/* No photo thumbnails in the list view for faster initial rendering. */}
           <div className="min-w-0 w-full">
             {isEditingTitle ? (
               <Input
@@ -470,7 +473,16 @@ function TaskCard({
       </Card>
     </div>
   );
-}
+}, (prev, next) => (
+  prev.task === next.task &&
+  prev.displayStatus === next.displayStatus &&
+  prev.tone === next.tone &&
+  prev.assignedLabel === next.assignedLabel &&
+  prev.onEdit === next.onEdit &&
+  prev.onDelete === next.onDelete &&
+  prev.onRename === next.onRename &&
+  prev.onViewPhoto === next.onViewPhoto
+));
 
 function SortableColumn({
   column,
@@ -862,6 +874,9 @@ function TaskEditor({
                         src={photo.uri}
                         alt="Task attachment"
                         className="h-24 w-full object-cover"
+                        // Lazy decode to avoid upfront work when opening the editor.
+                        loading="lazy"
+                        decoding="async"
                       />
                     </button>
                     <button
@@ -1408,6 +1423,7 @@ export default function App() {
   const isAuthed = !!authUserId;
   const todayStamp = startOfDay(new Date()).getTime();
   const today = new Date(todayStamp);
+  // Memoize derived statuses/tone so list rendering doesn't recompute per render.
   const displayStatusById = useMemo(() => {
     const map = new Map<string, TaskStatus>();
     for (const t of tasks) {
