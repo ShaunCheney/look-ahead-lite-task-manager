@@ -1,6 +1,23 @@
 import { supabase } from "./supabaseClient";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { v4 as uuid } from "uuid";
+import {
+  DndContext,
+  KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { useBoard } from "./hooks/useBoard";
 import { buildTaskNotes, computeTaskSortOrders, seedDefaultColumnsInSupabase as seedCols, type PhotoAttachment, type Task, type TaskStatus } from "./board/boardService";
 import { CameraTaskButton, PhotoTaskModal, TaskPhotoViewer, type UserOption } from "./components/photo-task";
@@ -9,6 +26,7 @@ import {
   Plus,
   Pencil,
   Camera,
+  GripVertical,
   Columns,
   Download,
   Upload,
@@ -196,6 +214,14 @@ function normalizeDateInput(value: string): string | undefined {
   return parsed ? toIsoDateString(parsed) : undefined;
 }
 
+function buildInitials(label: string): string {
+  const trimmed = label.trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -315,6 +341,7 @@ function TaskCard({
   onRename,
   onViewPhoto,
   today,
+  assignedLabel,
 }: {
   task: Task;
   onEdit: (t: Task) => void;
@@ -322,6 +349,7 @@ function TaskCard({
   onRename: (t: Task) => void;
   onViewPhoto?: (photo: PhotoAttachment, task: Task) => void;
   today: Date;
+  assignedLabel?: string;
 }) {
   const displayStatus = getDisplayStatus(task, today);
   const tone = getStatusClasses(displayStatus);
@@ -329,6 +357,10 @@ function TaskCard({
   const [titleDraft, setTitleDraft] = useState(task.title);
   const photo = task.photo;
   const canViewPhoto = !!photo && !!onViewPhoto;
+  const assignedInitials = assignedLabel ? buildInitials(assignedLabel) : "";
+  const assignedDisplay = assignedLabel
+    ? (assignedLabel.length <= 8 ? assignedLabel : (assignedInitials || assignedLabel))
+    : "";
 
   useEffect(() => {
     if (!isEditingTitle) setTitleDraft(task.title);
@@ -356,18 +388,25 @@ function TaskCard({
               <Badge className={`rounded-full text-[9px] px-1.5 py-0.5 border pointer-events-none ${tone.chip}`}>
                 {displayStatus}
               </Badge>
+              {assignedDisplay && (
+                <Badge
+                  className="rounded-full text-[9px] px-1.5 py-0.5 border bg-white/70 text-neutral-700 border-neutral-300 pointer-events-none"
+                  title={assignedLabel}
+                >
+                  {assignedDisplay}
+                </Badge>
+              )}
               {typeof task.workDays === "number" && (
                 <Badge className={`rounded-full text-[9px] px-1.5 py-0.5 border pointer-events-none ${tone.chip}`}>
                   {task.workDays}d
                 </Badge>
               )}
             </div>
-            <div className="flex gap-1 flex-shrink-0">
+            <div className="flex gap-2 flex-shrink-0">
               {canViewPhoto && (
                 <Button
                   variant="ghost"
-                  size="sm"
-                  className="h-6 px-1.5 text-xs"
+                  className="h-11 w-11 p-0 rounded-full sm:h-8 sm:w-8"
                   onClick={() => {
                     if (!photo || !onViewPhoto) return;
                     onViewPhoto(photo, task);
@@ -377,11 +416,11 @@ function TaskCard({
                   <Camera className="h-3 w-3" />
                 </Button>
               )}
-              <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs" onClick={() => onEdit(task)}>
-                <Pencil className="h-3 w-3" />
+              <Button variant="ghost" className="h-11 w-11 p-0 rounded-full sm:h-8 sm:w-8" onClick={() => onEdit(task)}>
+                <Pencil className="h-4 w-4" />
               </Button>
-              <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs" onClick={() => onDelete(task.id)}>
-                <Trash2 className="h-3 w-3" />
+              <Button variant="ghost" className="h-11 w-11 p-0 rounded-full sm:h-8 sm:w-8" onClick={() => onDelete(task.id)}>
+                <Trash2 className="h-4 w-4" />
               </Button>
             </div>
           </div>
@@ -423,17 +462,55 @@ function TaskCard({
   );
 }
 
-// (Removed inline task add + drag-and-drop helpers)
+function SortableColumn({
+  column,
+  children,
+}: {
+  column: Column;
+  children: (args: {
+    setActivatorNodeRef: (element: HTMLElement | null) => void;
+    attributes: any;
+    listeners: any;
+  }) => ReactNode;
+}) {
+  const dndId = `col:${column.id}`;
+
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+  } = useSortable({ id: dndId });
+
+  const style: CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+  };
+
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children({ setActivatorNodeRef, attributes, listeners })}
+    </div>
+  );
+}
 
 
 function TaskEditor({
   openTask,
   onSave,
   onClose,
+  columns,
+  users,
+  usersLoading,
 }: {
   openTask: Task | null;
   onSave: (t: Task) => void;
   onClose: () => void;
+  columns: Column[];
+  users: UserOption[];
+  usersLoading: boolean;
 }) {
   const [draft, setDraft] = useState<Task | null>(openTask);
   const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
@@ -446,6 +523,15 @@ function TaskEditor({
 
   const manualStatusValue = MANUAL_STATUS_OPTIONS.includes(draft.status) ? draft.status : "";
   const statusPlaceholder = manualStatusValue ? "Select status" : "Derived from dates";
+  const phaseOptions = columns;
+  const selectedPhaseId = draft.phaseId || draft.columnId || phaseOptions[0]?.id || "";
+  const userOptions = users;
+  const assignedUserId = draft.assignedUserId || "";
+  const usersPlaceholder = usersLoading
+    ? "Loading users..."
+    : userOptions.length
+      ? "Select user"
+      : "No users";
 
   return (
     <Sheet open={!!openTask} onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -477,6 +563,46 @@ function TaskEditor({
               onChange={(e) => setDraft({ ...draft, title: e.target.value })}
               placeholder="e.g., Call vendor / Order material"
             />
+          </div>
+
+          <div>
+            <label className="text-xs font-medium">Phase</label>
+            <Select
+              value={selectedPhaseId}
+              onValueChange={(value) => setDraft({ ...draft, columnId: value, phaseId: value })}
+              disabled={!phaseOptions.length}
+            >
+              <SelectTrigger className="w-full bg-white">
+                <SelectValue placeholder={phaseOptions.length ? "Select phase" : "No phases"} />
+              </SelectTrigger>
+              <SelectContent className="bg-white">
+                {phaseOptions.map((phase) => (
+                  <SelectItem key={phase.id} value={phase.id}>
+                    {phase.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium">Assigned To</label>
+            <Select
+              value={assignedUserId}
+              onValueChange={(value) => setDraft({ ...draft, assignedUserId: value })}
+              disabled={usersLoading || !userOptions.length}
+            >
+              <SelectTrigger className="w-full bg-white">
+                <SelectValue placeholder={usersPlaceholder} />
+              </SelectTrigger>
+              <SelectContent className="bg-white">
+                {userOptions.map((user) => (
+                  <SelectItem key={user.id} value={user.id}>
+                    {user.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <div>
@@ -1050,9 +1176,6 @@ export default function App() {
   const [showSummary, setShowSummary] = useState(false);
   const [collapsedPhaseIds, setCollapsedPhaseIds] = useState<Set<string>>(() => new Set());
 
-  const cameraInputRef = useRef<HTMLInputElement | null>(null);
-  const [cameraInputKey, setCameraInputKey] = useState(0);
-  const cameraReopenPendingRef = useRef(false);
   const pendingPhotoIdRef = useRef<string | null>(null);
   const [photoModalOpen, setPhotoModalOpen] = useState(false);
   const [photoPreviewUri, setPhotoPreviewUri] = useState<string | null>(null);
@@ -1080,6 +1203,15 @@ export default function App() {
     () => groupTasksByColumn(tasks, columns, today),
     [tasks, columns, todayStamp]
   );
+  const userLabelById = useMemo(
+    () => new Map(users.map((u) => [u.id, u.label])),
+    [users]
+  );
+  const sensors = useSensors(
+    useSensor(MouseSensor),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   function isPhaseCollapsed(id: string) {
     return collapsedPhaseIds.has(id);
@@ -1100,6 +1232,27 @@ export default function App() {
 
   function expandAllPhases() {
     setCollapsedPhaseIds(new Set());
+  }
+
+  function handlePhaseDragEnd(event: any) {
+    const { active, over } = event;
+    if (!over) return;
+
+    const activeId = String(active?.id || "");
+    const overId = String(over?.id || "");
+    if (!activeId.startsWith("col:") || !overId.startsWith("col:")) return;
+
+    const fromColId = activeId.replace("col:", "");
+    const toColId = overId.replace("col:", "");
+
+    const oldIndex = columns.findIndex((c) => c.id === fromColId);
+    const newIndex = columns.findIndex((c) => c.id === toColId);
+    if (oldIndex === -1 || newIndex === -1 || oldIndex === newIndex) return;
+
+    const nextCols = arrayMove(columns, oldIndex, newIndex);
+    const next = { columns: nextCols, tasks };
+    setBoard(next);
+    scheduleSaveBoard(next.columns, next.tasks);
   }
 
 
@@ -1536,11 +1689,7 @@ export default function App() {
     input.click();
   }
 
-  function triggerCamera() {
-    cameraInputRef.current?.click();
-  }
-
-  function resetPhotoCaptureState({ reopenCamera = false }: { reopenCamera?: boolean } = {}) {
+  function resetPhotoCaptureState() {
     pendingPhotoIdRef.current = null;
     setPhotoAttachment(null);
     setPhotoProcessing(false);
@@ -1548,19 +1697,42 @@ export default function App() {
       if (prev) URL.revokeObjectURL(prev);
       return null;
     });
-    if (cameraInputRef.current) {
-      cameraInputRef.current.value = "";
-    }
-    cameraInputRef.current = null;
-    if (reopenCamera) cameraReopenPendingRef.current = true;
-    setCameraInputKey((prev) => prev + 1);
   }
 
-  useEffect(() => {
-    if (!cameraReopenPendingRef.current) return;
-    cameraReopenPendingRef.current = false;
-    triggerCamera();
-  }, [cameraInputKey]);
+  function requestCamera() {
+    resetPhotoCaptureState();
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.capture = "environment";
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    input.style.pointerEvents = "none";
+
+    const cleanup = () => {
+      if (input.parentNode) input.parentNode.removeChild(input);
+    };
+
+    const handleFocus = () => {
+      if (!input.files || input.files.length === 0) {
+        input.value = "";
+        cleanup();
+      }
+      window.removeEventListener("focus", handleFocus);
+    };
+
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) handleCameraCapture(file);
+      input.value = "";
+      cleanup();
+      window.removeEventListener("focus", handleFocus);
+    };
+
+    window.addEventListener("focus", handleFocus);
+    document.body.appendChild(input);
+    input.click();
+  }
 
   function handleCameraCapture(file: File) {
     const previewUrl = URL.createObjectURL(file);
@@ -1627,18 +1799,16 @@ export default function App() {
   return (
     <div className="min-h-screen w-full max-w-[100vw] bg-white overflow-x-hidden">
       <CameraTaskButton
-        onCapture={handleCameraCapture}
-        inputRef={cameraInputRef}
-        inputKey={cameraInputKey}
+        onRequestPhoto={requestCamera}
         disabled={false}
       />
       <div
         className="w-full max-w-[100vw] mx-auto px-3 sm:px-6 pb-4 space-y-4 overflow-x-hidden"
-        style={{ paddingTop: "calc(env(safe-area-inset-top) + 72px)" }}
+        style={{ paddingTop: "calc(env(safe-area-inset-top) + 60px)" }}
       >
         <header
-          className="sticky top-0 z-20 bg-white pb-3 overflow-x-hidden"
-          style={{ top: "calc(env(safe-area-inset-top) + 72px)" }}
+          className="sticky top-0 z-30 bg-white pb-3 overflow-x-hidden"
+          style={{ top: "calc(env(safe-area-inset-top) + 60px)" }}
         >
           <div className="flex flex-wrap items-start gap-3 max-w-[100vw] min-w-0">
             <div className="flex flex-col gap-2 w-full max-w-[100vw] min-w-0">
@@ -2056,78 +2226,104 @@ export default function App() {
           </div>
         </header>
 
-        <div className="w-full border rounded-2xl bg-white p-4 sm:p-6">
-          <div className="flex flex-col gap-2 w-full">
-            {columns.length === 0 ? (
-              <div className="text-sm opacity-60">No phases yet.</div>
-            ) : (
-              columns.map((c) => {
-                const items = tasksByColumnSorted[c.id] || [];
-                return (
-                  <div key={c.id} className="w-full">
-                    <div className="bg-transparent rounded-none shadow-none p-0 border-b border-neutral-200">
-                      {/* Phase Header as Section Title */}
-                      <div className="mb-3 pb-2 border-b-2 border-neutral-300">
-                        <div className="flex items-center gap-2">
-                          <div
-                            className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
-                            onClick={() => setOpenColumn(c)}
-                          >
-                            {c.name}
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-8 w-8 p-0"
-                            onClick={() => togglePhaseCollapsed(c.id)}
-                            title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                            aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                          >
-                            {isPhaseCollapsed(c.id) ? (
-                              <ChevronRight className="h-4 w-4" />
-                            ) : (
-                              <ChevronDown className="h-4 w-4" />
-                            )}
-                          </Button>
-                        </div>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          onDragEnd={handlePhaseDragEnd}
+        >
+          <SortableContext
+            items={columns.map((c) => `col:${c.id}`)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="w-full border rounded-2xl bg-white p-4 pt-5 sm:p-6 sm:pt-6">
+              <div className="flex flex-col gap-2 w-full">
+                {columns.length === 0 ? (
+                  <div className="text-sm opacity-60">No phases yet.</div>
+                ) : (
+                  columns.map((c) => {
+                    const items = tasksByColumnSorted[c.id] || [];
+                    return (
+                      <div key={c.id} className="w-full">
+                        <SortableColumn column={c}>
+                          {({ setActivatorNodeRef, attributes, listeners }) => (
+                            <div className="bg-transparent rounded-none shadow-none p-0 border-b border-neutral-200">
+                              {/* Phase Header as Section Title */}
+                              <div className="mb-3 pb-2 border-b-2 border-neutral-300">
+                                <div className="flex items-center gap-2">
+                                  <div
+                                    ref={setActivatorNodeRef}
+                                    {...attributes}
+                                    {...listeners}
+                                    className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/60 flex-shrink-0"
+                                    aria-label="Move Phase"
+                                    title="Move Phase"
+                                  >
+                                    <GripVertical className="h-3 w-3" />
+                                  </div>
+                                  <div
+                                    className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
+                                    onClick={() => setOpenColumn(c)}
+                                  >
+                                    {c.name}
+                                  </div>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-8 w-8 p-0"
+                                    onClick={() => togglePhaseCollapsed(c.id)}
+                                    title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                    aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                  >
+                                    {isPhaseCollapsed(c.id) ? (
+                                      <ChevronRight className="h-4 w-4" />
+                                    ) : (
+                                      <ChevronDown className="h-4 w-4" />
+                                    )}
+                                  </Button>
+                                </div>
+                              </div>
+
+                              {!isPhaseCollapsed(c.id) && (
+                                <>
+                                  {/* Tasks Container - Indented */}
+                                  <div className="w-full pl-6 space-y-2 mb-4">
+                                    {items.map((t) => (
+                                      <TaskCard
+                                        key={t.id}
+                                        task={t}
+                                        onEdit={(tk) => setOpenTask(tk)}
+                                        onDelete={(id) => deleteTask(id)}
+                                        onRename={saveTask}
+                                        onViewPhoto={(photo) => setPhotoViewer(photo)}
+                                        today={today}
+                                        assignedLabel={userLabelById.get(t.assignedUserId)}
+                                      />
+                                    ))}
+                                  </div>
+
+                                  <div className="flex justify-end mb-4">
+                                    <Button
+                                      variant="secondary"
+                                      size="sm"
+                                      className="text-xs"
+                                      onClick={() => removeColumn(c.id)}
+                                    >
+                                      <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
+                                    </Button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </SortableColumn>
                       </div>
-
-                      {!isPhaseCollapsed(c.id) && (
-                        <>
-                          {/* Tasks Container - Indented */}
-                          <div className="w-full pl-6 space-y-2 mb-4">
-                            {items.map((t) => (
-                              <TaskCard
-                                key={t.id}
-                                task={t}
-                                onEdit={(tk) => setOpenTask(tk)}
-                                onDelete={(id) => deleteTask(id)}
-                                onRename={saveTask}
-                                onViewPhoto={(photo) => setPhotoViewer(photo)}
-                                today={today}
-                              />
-                            ))}
-                          </div>
-
-                          <div className="flex justify-end mb-4">
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              className="text-xs"
-                              onClick={() => removeColumn(c.id)}
-                            >
-                              <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
-                            </Button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </SortableContext>
+        </DndContext>
       </div>
 
       {showReport && <ThreeWeekReport tasks={tasks} columns={columns} onClose={() => setShowReport(false)} />}
@@ -2146,7 +2342,7 @@ export default function App() {
         defaultAssignedUserId={photoDefaults.assignedUserId}
         onClose={handleClosePhotoModal}
         onSave={handleSavePhotoTask}
-        onRequestPhoto={() => resetPhotoCaptureState({ reopenCamera: true })}
+        onRequestPhoto={requestCamera}
         onPhaseChange={(value) => setPhotoDefaults((prev) => ({ ...prev, phaseId: value }))}
         onAssignedChange={(value) => setPhotoDefaults((prev) => ({ ...prev, assignedUserId: value }))}
       />
@@ -2156,7 +2352,14 @@ export default function App() {
         onClose={() => setPhotoViewer(null)}
       />
 
-      <TaskEditor openTask={openTask} onSave={saveTask} onClose={() => setOpenTask(null)} />
+      <TaskEditor
+        openTask={openTask}
+        onSave={saveTask}
+        onClose={() => setOpenTask(null)}
+        columns={columns}
+        users={users}
+        usersLoading={usersLoading}
+      />
       {openColumn !== undefined && (
         <ColumnEditor
           initial={openColumn ?? null}

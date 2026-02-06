@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Camera, Mic, MicOff, RotateCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,16 +17,11 @@ export interface PhaseOption {
 }
 
 type CameraTaskButtonProps = {
-  onCapture: (file: File) => void;
-  inputRef?: React.RefObject<HTMLInputElement>;
+  onRequestPhoto: () => void;
   disabled?: boolean;
-  inputKey?: number;
 };
 
-export function CameraTaskButton({ onCapture, inputRef, disabled, inputKey }: CameraTaskButtonProps) {
-  const localRef = useRef<HTMLInputElement>(null);
-  const fileRef = inputRef ?? localRef;
-
+export function CameraTaskButton({ onRequestPhoto, disabled }: CameraTaskButtonProps) {
   return (
     <div className="fixed top-0 left-0 right-0 z-40 border-b border-neutral-200 bg-white/95 backdrop-blur">
       <div
@@ -36,26 +31,13 @@ export function CameraTaskButton({ onCapture, inputRef, disabled, inputKey }: Ca
         <Button
           type="button"
           className="w-full h-11 text-base rounded-full bg-neutral-900 text-white hover:bg-neutral-800"
-          onClick={() => fileRef.current?.click()}
+          onClick={onRequestPhoto}
           disabled={disabled}
         >
           <Camera className="h-4 w-4 mr-2" />
           Add Task (Photo)
         </Button>
       </div>
-      <input
-        key={inputKey}
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="sr-only"
-        onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) onCapture(file);
-          e.currentTarget.value = "";
-        }}
-      />
     </div>
   );
 }
