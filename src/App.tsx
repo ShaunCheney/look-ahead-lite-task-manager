@@ -38,7 +38,8 @@ import {
   ChevronRight,
   ChevronDown,
   LogOut,
-  Menu
+  Menu,
+  Loader2
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -72,12 +73,14 @@ const STATUS_OPTIONS: TaskStatus[] = [
   "This week",
   "Next week",
   "Week After",
+  "Future Work",
   "Closed",
 ];
 
 const MANUAL_STATUS_OPTIONS: TaskStatus[] = [
   "Unassigned",
   "In Process",
+  "Future Work",
   "Completed",
   "Closed",
 ];
@@ -90,6 +93,7 @@ const SORT_STATUS_ORDER: TaskStatus[] = [
   "This week",
   "Next week",
   "Week After",
+  "Future Work",
   "Delayed/Overdue",
 ];
 
@@ -112,6 +116,8 @@ function getStatusClasses(status: TaskStatus) {
       return { card: "bg-indigo-50 border-indigo-100", chip: "bg-indigo-100 text-indigo-800 border-indigo-200" };
     case "Week After":
       return { card: "bg-fuchsia-50 border-fuchsia-100", chip: "bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200" };
+    case "Future Work":
+      return { card: "bg-cyan-50 border-cyan-100", chip: "bg-cyan-100 text-cyan-800 border-cyan-200" };
     case "Closed":
       return { card: "bg-neutral-50 border-neutral-200 opacity-70", chip: "bg-neutral-200 text-neutral-700 border-neutral-300 opacity-70" };
     case "Unassigned":
@@ -130,6 +136,7 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
   "This week": "#FDE68A",
   "Next week": "#C7D2FE",
   "Week After": "#F5D0FE",
+  "Future Work": "#A5F3FC",
   "Closed": "#E5E7EB",
   "Unassigned": "#E2E8F0",
 };
@@ -265,6 +272,12 @@ function getDerivedStatus(task: Task, today = new Date()): TaskStatus | null {
   if (targetStart >= thisWeekStart && targetStart < nextWeekStart) return "This week";
   if (targetStart >= nextWeekStart && targetStart < weekAfterStart) return "Next week";
   if (targetStart >= weekAfterStart && targetStart < weekAfterNextStart) return "Week After";
+  // Future Work is derived only from a valid start date beyond the current week ranges.
+  const startDate = parseIsoDate(task.startDate);
+  if (startDate) {
+    const startDay = startOfDay(startDate);
+    if (startDay >= weekAfterNextStart) return "Future Work";
+  }
   return null;
 }
 
@@ -2268,8 +2281,12 @@ export default function App() {
                             </Button>
                           </div>
 
+                          {/* Loading indicator while phases + tasks are loading (non-blocking). */}
                           {boardLoading && (
-                            <div className="text-xs opacity-60">Loading board…</div>
+                            <div className="flex items-center gap-2 text-xs opacity-60">
+                              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                              <span>Loading board…</span>
+                            </div>
                           )}
                           {boardError && (
                             <div className="text-sm text-rose-600">
@@ -2403,7 +2420,13 @@ export default function App() {
                           </Button>
                         </div>
 
-                        {boardLoading && <span className="text-xs opacity-60 ml-2">Loading board…</span>}
+                        {/* Loading indicator while phases + tasks are loading (non-blocking). */}
+                        {boardLoading && (
+                          <span className="inline-flex items-center gap-2 text-xs opacity-60 ml-2">
+                            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                            Loading board…
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 justify-start">

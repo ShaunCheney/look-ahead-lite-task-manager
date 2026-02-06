@@ -9,6 +9,7 @@ export type TaskStatus =
   | "This week"
   | "Next week"
   | "Week After"
+  | "Future Work"
   | "Closed";
 
 const TASK_UPSERT_BATCH_SIZE = 25;
