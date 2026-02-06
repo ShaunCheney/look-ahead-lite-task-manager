@@ -19,10 +19,18 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
     if (!authUserId || !currentProjectId) return;
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
     saveTimerRef.current = window.setTimeout(() => {
-      svc.saveBoardToSupabase(nextCols, nextTasks, authUserId || undefined, currentProjectId).catch((e) => {
-        console.error(e);
-        setBoardError(e?.message || "Failed to save board");
-      });
+      svc.saveBoardToSupabase(nextCols, nextTasks, authUserId || undefined, currentProjectId)
+        .then(() => {
+          setBoardError(null);
+        })
+        .catch((e) => {
+          console.error(e);
+          if (isStatementTimeout(e)) {
+            setBoardError("Saving is taking longer than expected. Please try again.");
+            return;
+          }
+          setBoardError(e?.message || "Failed to save board");
+        });
     }, 300);
   }
 
@@ -46,7 +54,13 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
         }
       } catch (e: any) {
         console.error(e);
-        if (!cancelled) setBoardError(e?.message || "Failed to load board");
+        if (!cancelled) {
+          if (isStatementTimeout(e)) {
+            setBoardError("Loading is taking longer than expected. Please try again.");
+          } else {
+            setBoardError(e?.message || "Failed to load board");
+          }
+        }
       } finally {
         if (!cancelled) setBoardLoading(false);
       }
@@ -118,4 +132,9 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
     removeColumn,
     scheduleSaveBoard,
   } as const;
+}
+
+function isStatementTimeout(error: any) {
+  const message = typeof error?.message === "string" ? error.message : String(error || "");
+  return message.toLowerCase().includes("statement timeout");
 }

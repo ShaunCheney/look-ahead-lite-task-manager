@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { v4 as uuid } from "uuid";
 import {
   DndContext,
@@ -119,6 +119,8 @@ function getStatusClasses(status: TaskStatus) {
       return { card: "bg-slate-50 border-slate-200", chip: "bg-slate-200 text-slate-700 border-slate-300" };
   }
 }
+
+const DEFAULT_STATUS_TONE = getStatusClasses("Unassigned");
 
 // pastel fills for the chart
 const STATUS_COLORS: Record<TaskStatus, string> = {
@@ -272,9 +274,13 @@ function getDisplayStatus(task: Task, today = new Date()): TaskStatus {
   return derived ?? task.status;
 }
 
-function compareTasks(a: Task, b: Task, today = new Date()): number {
-  const statusA = getDisplayStatus(a, today);
-  const statusB = getDisplayStatus(b, today);
+function getDisplayStatusFromCache(task: Task, today: Date, cache?: Map<string, TaskStatus>): TaskStatus {
+  return cache?.get(task.id) ?? getDisplayStatus(task, today);
+}
+
+function compareTasks(a: Task, b: Task, today = new Date(), statusCache?: Map<string, TaskStatus>): number {
+  const statusA = getDisplayStatusFromCache(a, today, statusCache);
+  const statusB = getDisplayStatusFromCache(b, today, statusCache);
   const orderA = SORT_STATUS_INDEX.get(statusA) ?? Number.MAX_SAFE_INTEGER;
   const orderB = SORT_STATUS_INDEX.get(statusB) ?? Number.MAX_SAFE_INTEGER;
   if (orderA !== orderB) return orderA - orderB;
@@ -295,17 +301,17 @@ function compareTasks(a: Task, b: Task, today = new Date()): number {
   return a.id.localeCompare(b.id);
 }
 
-function sortTasks(tasks: Task[], today = new Date()): Task[] {
-  return [...tasks].sort((a, b) => compareTasks(a, b, today));
+function sortTasks(tasks: Task[], today = new Date(), statusCache?: Map<string, TaskStatus>): Task[] {
+  return [...tasks].sort((a, b) => compareTasks(a, b, today, statusCache));
 }
 
-function groupTasksByColumn(tasks: Task[], columns: Column[], today = new Date()): Record<string, Task[]> {
+function groupTasksByColumn(tasks: Task[], columns: Column[], today = new Date(), statusCache?: Map<string, TaskStatus>): Record<string, Task[]> {
   const map: Record<string, Task[]> = Object.fromEntries(columns.map((c) => [c.id, [] as Task[]]));
   for (const t of tasks) {
     (map[t.columnId] ||= []).push(t);
   }
   for (const colId of Object.keys(map)) {
-    map[colId] = sortTasks(map[colId], today);
+    map[colId] = sortTasks(map[colId], today, statusCache);
   }
   return map;
 }
@@ -339,23 +345,23 @@ function useIsMobile(breakpointPx = 768) {
 // ================= Reusable UI =================
 function TaskCard({
   task,
+  displayStatus,
+  tone,
   onEdit,
   onDelete,
   onRename,
   onViewPhoto,
-  today,
   assignedLabel,
 }: {
   task: Task;
+  displayStatus: TaskStatus;
+  tone: ReturnType<typeof getStatusClasses>;
   onEdit: (t: Task) => void;
   onDelete: (id: string) => void;
   onRename: (t: Task) => void;
   onViewPhoto?: (photos: PhotoAttachment[], startIndex: number) => void;
-  today: Date;
   assignedLabel?: string;
 }) {
-  const displayStatus = getDisplayStatus(task, today);
-  const tone = getStatusClasses(displayStatus);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
   const photos = task.photos || [];
@@ -534,6 +540,7 @@ function TaskEditor({
   const [photoViewer, setPhotoViewer] = useState<{ photos: PhotoAttachment[]; index: number } | null>(null);
   const [isDictating, setIsDictating] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
 
   function stopDictation() {
     if (recognitionRef.current) {
@@ -606,6 +613,10 @@ function TaskEditor({
     }
     setDraft({ ...openTask, photos: openTask.photos ?? [] });
     setPhotoViewer(null);
+    if (!openTask.id) {
+      requestAnimationFrame(() => titleInputRef.current?.focus());
+      setTimeout(() => titleInputRef.current?.focus(), 120);
+    }
   }, [openTask]);
   useEffect(() => {
     if (!incomingPhotos.length) return;
@@ -615,7 +626,10 @@ function TaskEditor({
       return { ...prev, photos: nextPhotos };
     });
     onConsumeIncomingPhotos();
-  }, [incomingPhotos, onConsumeIncomingPhotos]);
+    if (isMobile) {
+      setTimeout(() => titleInputRef.current?.focus(), 120);
+    }
+  }, [incomingPhotos, onConsumeIncomingPhotos, isMobile]);
   if (!draft) return null;
 
   const derivedStatus = getDerivedStatus(draft);
@@ -679,6 +693,7 @@ function TaskEditor({
             <label className="text-xs font-medium">Title</label>
             <div className="mt-1 flex items-center gap-2">
               <Input
+                ref={titleInputRef}
                 autoFocus
                 value={draft.title}
                 onChange={(e) => setDraft({ ...draft, title: e.target.value })}
@@ -826,7 +841,7 @@ function TaskEditor({
                     setDraft({ ...draft, workDays: n, endDate: nextEndDate });
                   }}
                   placeholder="e.g., 3"
-                  className="h-10 text-sm bg-white"
+                  className="h-10 text-base sm:text-sm bg-white"
                 />
               </div>
             </div>
@@ -1393,9 +1408,23 @@ export default function App() {
   const isAuthed = !!authUserId;
   const todayStamp = startOfDay(new Date()).getTime();
   const today = new Date(todayStamp);
+  const displayStatusById = useMemo(() => {
+    const map = new Map<string, TaskStatus>();
+    for (const t of tasks) {
+      map.set(t.id, getDisplayStatus(t, today));
+    }
+    return map;
+  }, [tasks, todayStamp]);
+  const toneByTaskId = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof getStatusClasses>>();
+    for (const [id, status] of displayStatusById.entries()) {
+      map.set(id, getStatusClasses(status));
+    }
+    return map;
+  }, [displayStatusById]);
   const tasksByColumnSorted = useMemo(
-    () => groupTasksByColumn(tasks, columns, today),
-    [tasks, columns, todayStamp]
+    () => groupTasksByColumn(tasks, columns, today, displayStatusById),
+    [tasks, columns, todayStamp, displayStatusById]
   );
   const userLabelById = useMemo(
     () => new Map(users.map((u) => [u.id, u.label])),
@@ -1406,6 +1435,19 @@ export default function App() {
     useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
+  const handleEditTask = useCallback((task: Task) => {
+    setQueuedPhotos([]);
+    setOpenTask(task);
+  }, []);
+  const handleViewPhotos = useCallback((photos: PhotoAttachment[], index: number) => {
+    setPhotoViewer({ photos, index });
+  }, []);
+  const handleDeleteTask = useCallback((id: string) => {
+    deleteTask(id);
+  }, [deleteTask]);
+  const handleRenameTask = useCallback((task: Task) => {
+    saveTask(task);
+  }, [saveTask]);
 
   function isPhaseCollapsed(id: string) {
     return collapsedPhaseIds.has(id);
@@ -2467,21 +2509,23 @@ export default function App() {
                             {!isPhaseCollapsed(c.id) && (
                               <>
                                 <div className="mt-3 space-y-2">
-                                  {items.map((t) => (
-                                    <TaskCard
-                                      key={t.id}
-                                      task={t}
-                                      onEdit={(tk) => {
-                                        setQueuedPhotos([]);
-                                        setOpenTask(tk);
-                                      }}
-                                      onDelete={(id) => deleteTask(id)}
-                                      onRename={saveTask}
-                                      onViewPhoto={(photos, index) => setPhotoViewer({ photos, index })}
-                                      today={today}
-                                      assignedLabel={userLabelById.get(t.assignedUserId)}
-                                    />
-                                  ))}
+                                  {items.map((t) => {
+                                    const displayStatus = displayStatusById.get(t.id) ?? t.status;
+                                    const tone = toneByTaskId.get(t.id) ?? DEFAULT_STATUS_TONE;
+                                    return (
+                                      <TaskCard
+                                        key={t.id}
+                                        task={t}
+                                        displayStatus={displayStatus}
+                                        tone={tone}
+                                        onEdit={handleEditTask}
+                                        onDelete={handleDeleteTask}
+                                        onRename={handleRenameTask}
+                                        onViewPhoto={handleViewPhotos}
+                                        assignedLabel={userLabelById.get(t.assignedUserId)}
+                                      />
+                                    );
+                                  })}
                                 </div>
 
                                 <div className="flex justify-end mt-3">

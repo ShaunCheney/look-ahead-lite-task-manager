@@ -11,6 +11,8 @@ export type TaskStatus =
   | "Week After"
   | "Closed";
 
+const TASK_UPSERT_BATCH_SIZE = 25;
+
 export interface PhotoAttachment {
   id: string;
   uri: string;
@@ -176,11 +178,35 @@ export async function saveBoardToSupabase(nextCols: Column[], nextTasks: Task[],
     };
   });
 
-  const { error: taskUpsertErr } = await supabase
-    .from("tasks")
-    .upsert(taskPayload, { onConflict: "id" });
+  await upsertTasksWithRetry(taskPayload);
+}
 
-  if (taskUpsertErr) throw taskUpsertErr;
+function isStatementTimeout(error: any) {
+  const message = typeof error?.message === "string" ? error.message : String(error || "");
+  return message.toLowerCase().includes("statement timeout");
+}
+
+async function upsertTasksInBatches(payload: any[], batchSize: number) {
+  for (let i = 0; i < payload.length; i += batchSize) {
+    const batch = payload.slice(i, i + batchSize);
+    const { error } = await supabase
+      .from("tasks")
+      .upsert(batch, { onConflict: "id" });
+    if (error) throw error;
+  }
+}
+
+async function upsertTasksWithRetry(payload: any[]) {
+  if (!payload.length) return;
+  try {
+    await upsertTasksInBatches(payload, TASK_UPSERT_BATCH_SIZE);
+  } catch (error) {
+    if (isStatementTimeout(error) && payload.length > 1) {
+      await upsertTasksInBatches(payload, Math.max(5, Math.floor(TASK_UPSERT_BATCH_SIZE / 2)));
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function seedDefaultColumnsInSupabase(userId: string, projectId: string) {
