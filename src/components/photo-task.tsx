@@ -20,9 +20,10 @@ type CameraTaskButtonProps = {
   onCapture: (file: File) => void;
   inputRef?: React.RefObject<HTMLInputElement>;
   disabled?: boolean;
+  inputKey?: number;
 };
 
-export function CameraTaskButton({ onCapture, inputRef, disabled }: CameraTaskButtonProps) {
+export function CameraTaskButton({ onCapture, inputRef, disabled, inputKey }: CameraTaskButtonProps) {
   const localRef = useRef<HTMLInputElement>(null);
   const fileRef = inputRef ?? localRef;
 
@@ -43,6 +44,7 @@ export function CameraTaskButton({ onCapture, inputRef, disabled }: CameraTaskBu
         </Button>
       </div>
       <input
+        key={inputKey}
         ref={fileRef}
         type="file"
         accept="image/*"

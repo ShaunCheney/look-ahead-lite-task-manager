@@ -1,23 +1,11 @@
 import { supabase } from "./supabaseClient";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { v4 as uuid } from "uuid";
-import { DndContext, closestCenter, MouseSensor, TouchSensor, useDroppable, useSensor, useSensors } from "@dnd-kit/core";
-
-import {
-  SortableContext,
-  verticalListSortingStrategy,
-  useSortable,
-} from "@dnd-kit/sortable";
-import { sortableKeyboardCoordinates } from "@dnd-kit/sortable";
-import { KeyboardSensor } from "@dnd-kit/core";
-import { CSS } from "@dnd-kit/utilities";
-
 import { useBoard } from "./hooks/useBoard";
 import { buildTaskNotes, computeTaskSortOrders, seedDefaultColumnsInSupabase as seedCols, type PhotoAttachment, type Task, type TaskStatus } from "./board/boardService";
 import { CameraTaskButton, PhotoTaskModal, TaskPhotoViewer, type UserOption } from "./components/photo-task";
 
 import {
-  GripVertical,
   Plus,
   Pencil,
   Camera,
@@ -66,11 +54,33 @@ const STATUS_OPTIONS: TaskStatus[] = [
   "Closed",
 ];
 
+const MANUAL_STATUS_OPTIONS: TaskStatus[] = [
+  "Unassigned",
+  "In Process",
+  "Completed",
+  "Closed",
+];
+
+const SORT_STATUS_ORDER: TaskStatus[] = [
+  "Unassigned",
+  "Closed",
+  "In Process",
+  "Completed",
+  "This week",
+  "Next week",
+  "Week After",
+  "Delayed/Overdue",
+];
+
+const SORT_STATUS_INDEX = new Map<TaskStatus, number>(
+  SORT_STATUS_ORDER.map((status, index) => [status, index])
+);
+
 // ================= Status styling =================
 function getStatusClasses(status: TaskStatus) {
   switch (status) {
     case "Completed":
-      return { card: "bg-emerald-50 border-emerald-100", chip: "bg-emerald-100 text-emerald-800 border-emerald-200" };
+      return { card: "bg-emerald-50 border-emerald-100 opacity-70", chip: "bg-emerald-100 text-emerald-800 border-emerald-200 opacity-70" };
     case "In Process":
       return { card: "bg-sky-50 border-sky-100", chip: "bg-sky-100 text-sky-800 border-sky-200" };
     case "Delayed/Overdue":
@@ -82,7 +92,7 @@ function getStatusClasses(status: TaskStatus) {
     case "Week After":
       return { card: "bg-fuchsia-50 border-fuchsia-100", chip: "bg-fuchsia-100 text-fuchsia-800 border-fuchsia-200" };
     case "Closed":
-      return { card: "bg-neutral-50 border-neutral-200", chip: "bg-neutral-200 text-neutral-700 border-neutral-300" };
+      return { card: "bg-neutral-50 border-neutral-200 opacity-70", chip: "bg-neutral-200 text-neutral-700 border-neutral-300 opacity-70" };
     case "Unassigned":
     default:
       return { card: "bg-slate-50 border-slate-200", chip: "bg-slate-200 text-slate-700 border-slate-300" };
@@ -157,6 +167,130 @@ function normalizeStatus(value: string): TaskStatus {
   return (match || "Unassigned") as TaskStatus;
 }
 
+function toIsoDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseIsoDate(value?: string): Date | null {
+  if (!value) return null;
+  if (value.includes("T")) {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+  }
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+  return new Date(year, month - 1, day);
+}
+
+function toDateInputValue(value?: string): string {
+  const parsed = parseIsoDate(value);
+  return parsed ? toIsoDateString(parsed) : "";
+}
+
+function normalizeDateInput(value: string): string | undefined {
+  const parsed = parseIsoDate(value);
+  return parsed ? toIsoDateString(parsed) : undefined;
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function startOfWeek(date: Date): Date {
+  const start = startOfDay(date);
+  const day = start.getDay();
+  start.setDate(start.getDate() - day);
+  return start;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function getTaskStatusDate(task: Task): Date | null {
+  const date = task.endDate || task.startDate;
+  return parseIsoDate(date);
+}
+
+function getDerivedStatus(task: Task, today = new Date()): TaskStatus | null {
+  const targetDate = getTaskStatusDate(task);
+  if (!targetDate) return null;
+
+  const todayStart = startOfDay(today);
+  const targetStart = startOfDay(targetDate);
+  if (targetStart < todayStart) return "Delayed/Overdue";
+
+  const thisWeekStart = startOfWeek(todayStart);
+  const nextWeekStart = addDays(thisWeekStart, 7);
+  const weekAfterStart = addDays(thisWeekStart, 14);
+  const weekAfterNextStart = addDays(thisWeekStart, 21);
+
+  if (targetStart >= thisWeekStart && targetStart < nextWeekStart) return "This week";
+  if (targetStart >= nextWeekStart && targetStart < weekAfterStart) return "Next week";
+  if (targetStart >= weekAfterStart && targetStart < weekAfterNextStart) return "Week After";
+  return null;
+}
+
+function getDisplayStatus(task: Task, today = new Date()): TaskStatus {
+  if (task.status === "Completed" || task.status === "Closed") return task.status;
+  const derived = getDerivedStatus(task, today);
+  return derived ?? task.status;
+}
+
+function compareTasks(a: Task, b: Task, today = new Date()): number {
+  const statusA = getDisplayStatus(a, today);
+  const statusB = getDisplayStatus(b, today);
+  const orderA = SORT_STATUS_INDEX.get(statusA) ?? Number.MAX_SAFE_INTEGER;
+  const orderB = SORT_STATUS_INDEX.get(statusB) ?? Number.MAX_SAFE_INTEGER;
+  if (orderA !== orderB) return orderA - orderB;
+
+  const dateA = getTaskStatusDate(a);
+  const dateB = getTaskStatusDate(b);
+  if (dateA && dateB) {
+    const diff = dateA.getTime() - dateB.getTime();
+    if (diff !== 0) return diff;
+  } else if (dateA) {
+    return -1;
+  } else if (dateB) {
+    return 1;
+  }
+
+  const titleDiff = a.title.localeCompare(b.title);
+  if (titleDiff !== 0) return titleDiff;
+  return a.id.localeCompare(b.id);
+}
+
+function sortTasks(tasks: Task[], today = new Date()): Task[] {
+  return [...tasks].sort((a, b) => compareTasks(a, b, today));
+}
+
+function groupTasksByColumn(tasks: Task[], columns: Column[], today = new Date()): Record<string, Task[]> {
+  const map: Record<string, Task[]> = Object.fromEntries(columns.map((c) => [c.id, [] as Task[]]));
+  for (const t of tasks) {
+    (map[t.columnId] ||= []).push(t);
+  }
+  for (const colId of Object.keys(map)) {
+    map[colId] = sortTasks(map[colId], today);
+  }
+  return map;
+}
+
+function computeEndDate(startDateIso: string, workDays?: number): string | undefined {
+  if (typeof workDays !== "number") return undefined;
+  const start = parseIsoDate(startDateIso);
+  if (!start) return undefined;
+  const safeDays = Math.max(0, Math.floor(workDays));
+  if (safeDays <= 0) return toIsoDateString(start);
+  const end = addDays(start, safeDays - 1);
+  return toIsoDateString(end);
+}
+
 // ================= Small hooks =================
 function useIsMobile(breakpointPx = 768) {
   const [isMobile, setIsMobile] = useState(() => {
@@ -174,22 +308,23 @@ function useIsMobile(breakpointPx = 768) {
 }
 
 // ================= Reusable UI =================
-function SortableTask({
+function TaskCard({
   task,
   onEdit,
   onDelete,
   onRename,
   onViewPhoto,
+  today,
 }: {
   task: Task;
   onEdit: (t: Task) => void;
   onDelete: (id: string) => void;
   onRename: (t: Task) => void;
   onViewPhoto?: (photo: PhotoAttachment, task: Task) => void;
+  today: Date;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: task.id });
-  const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition };
-  const tone = getStatusClasses(task.status);
+  const displayStatus = getDisplayStatus(task, today);
+  const tone = getStatusClasses(displayStatus);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
   const photo = task.photo;
@@ -213,28 +348,19 @@ function SortableTask({
   }
 
   return (
-    <div ref={setNodeRef} style={style} className="mb-2">
+    <div className="mb-2">
       <Card className={`rounded-lg shadow-sm border text-sm ${tone.card}`}>
         <CardContent className="p-2">
           <div className="flex justify-between items-start gap-2 mb-1">
-            <div className="flex items-center gap-2 min-w-0">
-              <div
-                className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-dashed border-neutral-300 text-[10px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/60 flex-shrink-0"
-                {...attributes}
-                {...listeners}
-              >
-                <GripVertical className="h-2.5 w-2.5" />
-              </div>
-              <div className="flex flex-wrap items-center gap-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-1 min-w-0">
+              <Badge className={`rounded-full text-[9px] px-1.5 py-0.5 border pointer-events-none ${tone.chip}`}>
+                {displayStatus}
+              </Badge>
+              {typeof task.workDays === "number" && (
                 <Badge className={`rounded-full text-[9px] px-1.5 py-0.5 border pointer-events-none ${tone.chip}`}>
-                  {task.status}
+                  {task.workDays}d
                 </Badge>
-                {typeof task.workDays === "number" && (
-                  <Badge className={`rounded-full text-[9px] px-1.5 py-0.5 border pointer-events-none ${tone.chip}`}>
-                    {task.workDays}d
-                  </Badge>
-                )}
-              </div>
+              )}
             </div>
             <div className="flex gap-1 flex-shrink-0">
               {canViewPhoto && (
@@ -297,110 +423,7 @@ function SortableTask({
   );
 }
 
-function QuickAddTask({
-  columnId,
-  onCreate,
-}: {
-  columnId: string;
-  onCreate: (columnId: string, title: string) => void;
-}) {
-  const [draft, setDraft] = useState("");
-  const ignoreBlurRef = useRef(false);
-
-  function commit({ keepFocus }: { keepFocus: boolean }) {
-    const title = draft.trim();
-    if (!title) {
-      if (!keepFocus) setDraft("");
-      return;
-    }
-    onCreate(columnId, title);
-    setDraft("");
-  }
-
-  return (
-    <Input
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          commit({ keepFocus: true });
-          return;
-        }
-        if (e.key === "Tab") {
-          e.preventDefault();
-          commit({ keepFocus: true });
-        }
-      }}
-      onBlur={() => {
-        if (ignoreBlurRef.current) {
-          ignoreBlurRef.current = false;
-          return;
-        }
-        if (draft.trim()) commit({ keepFocus: false });
-      }}
-      placeholder="+ Add task"
-      className="w-full min-h-[56px] rounded-lg border border-dashed border-neutral-300 bg-neutral-50/60 text-left px-3 py-2 text-xs text-neutral-700 hover:bg-neutral-100 focus-visible:ring-0 focus-visible:ring-offset-0"
-    />
-  );
-}
-
-/**
- * Makes the whole phase sortable, and lets us attach the drag handle
- * specifically to the "Move Phase" pill.
- */
-function SortableColumn({
-  column,
-  children,
-}: {
-  column: Column;
-  children: (args: {
-    setActivatorNodeRef: (element: HTMLElement | null) => void;
-    attributes: any;
-    listeners: any;
-  }) => React.ReactNode;
-}) {
-  const dndId = `col:${column.id}`;
-
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    setActivatorNodeRef,
-    transform,
-    transition,
-  } = useSortable({ id: dndId });
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-  };
-
-  return (
-    <div ref={setNodeRef} style={style}>
-      {children({ setActivatorNodeRef, attributes, listeners })}
-    </div>
-  );
-}
-
-function ColumnDropZone({
-  columnId,
-  children,
-}: {
-  columnId: string;
-  children: React.ReactNode;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: columnId });
-
-  return (
-    <div
-      ref={setNodeRef}
-      className={`rounded-xl transition-colors ${isOver ? "ring-2 ring-neutral-300" : ""}`}
-    >
-      {children}
-    </div>
-  );
-}
+// (Removed inline task add + drag-and-drop helpers)
 
 
 function TaskEditor({
@@ -413,8 +436,16 @@ function TaskEditor({
   onClose: () => void;
 }) {
   const [draft, setDraft] = useState<Task | null>(openTask);
-  useEffect(() => setDraft(openTask), [openTask]);
+  const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
+
+  useEffect(() => {
+    setDraft(openTask);
+    setPhotoViewerOpen(false);
+  }, [openTask]);
   if (!draft) return null;
+
+  const manualStatusValue = MANUAL_STATUS_OPTIONS.includes(draft.status) ? draft.status : "";
+  const statusPlaceholder = manualStatusValue ? "Select status" : "Derived from dates";
 
   return (
     <Sheet open={!!openTask} onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -423,6 +454,21 @@ function TaskEditor({
           <SheetTitle>{draft.id ? "Edit Task" : "New Task"}</SheetTitle>
         </SheetHeader>
         <div className="mt-6 space-y-4">
+          {draft.photo && (
+            <button
+              type="button"
+              className="w-full overflow-hidden rounded-xl border border-neutral-200 bg-neutral-100"
+              onClick={() => setPhotoViewerOpen(true)}
+              title="Tap to view photo"
+            >
+              <img
+                src={draft.photo.uri}
+                alt="Task"
+                className="w-full max-h-[35vh] object-contain bg-black/90"
+              />
+            </button>
+          )}
+
           <div>
             <label className="text-xs font-medium">Title</label>
             <Input
@@ -436,20 +482,59 @@ function TaskEditor({
           <div>
             <label className="text-xs font-medium">Status</label>
             <Select
-              value={draft.status}
+              value={manualStatusValue}
               onValueChange={(v) => setDraft({ ...draft, status: v as TaskStatus })}
             >
               <SelectTrigger className="w-full bg-white">
-                <SelectValue placeholder="Select status" />
+                <SelectValue placeholder={statusPlaceholder} />
               </SelectTrigger>
               <SelectContent className="bg-white">
-                {STATUS_OPTIONS.map((s) => (
+                {MANUAL_STATUS_OPTIONS.map((s) => (
                   <SelectItem key={s} value={s}>
                     {s}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {!manualStatusValue && (
+              <div className="text-xs text-neutral-500 mt-1">
+                Date-based status is derived from dates.
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="text-xs font-medium">Dates</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-neutral-600">Start Date</label>
+                <Input
+                  type="date"
+                  value={toDateInputValue(draft.startDate)}
+                  onChange={(e) => {
+                    const nextStartDate = normalizeDateInput(e.target.value);
+                    let nextEndDate = draft.endDate;
+                    if (nextStartDate && typeof draft.workDays === "number") {
+                      nextEndDate = computeEndDate(nextStartDate, draft.workDays) ?? nextEndDate;
+                    }
+                    setDraft({ ...draft, startDate: nextStartDate, endDate: nextEndDate });
+                  }}
+                  className="h-12 text-base bg-white"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-neutral-600">End Date</label>
+                <Input
+                  type="date"
+                  value={toDateInputValue(draft.endDate)}
+                  onChange={(e) => {
+                    const nextEndDate = normalizeDateInput(e.target.value);
+                    setDraft({ ...draft, endDate: nextEndDate });
+                  }}
+                  className="h-12 text-base bg-white"
+                />
+              </div>
+            </div>
           </div>
 
           <div>
@@ -462,7 +547,11 @@ function TaskEditor({
               onChange={(e) => {
                 const v = e.target.value;
                 const n = v === "" ? undefined : Math.max(0, Math.floor(Number(v)));
-                setDraft({ ...draft, workDays: n });
+                let nextEndDate = draft.endDate;
+                if (draft.startDate && typeof n === "number") {
+                  nextEndDate = computeEndDate(draft.startDate, n) ?? nextEndDate;
+                }
+                setDraft({ ...draft, workDays: n, endDate: nextEndDate });
               }}
               placeholder="e.g., 3"
             />
@@ -484,6 +573,11 @@ function TaskEditor({
           </div>
         </div>
       </SheetContent>
+      <TaskPhotoViewer
+        open={photoViewerOpen}
+        photo={draft.photo}
+        onClose={() => setPhotoViewerOpen(false)}
+      />
     </Sheet>
   );
 }
@@ -543,6 +637,7 @@ function ColumnEditor({
 
 // ======= Text export helpers for reports =======
 function buildThreeWeekText(tasks: Task[], columns: Column[]): string {
+  const today = startOfDay(new Date());
   const sections: { title: string; key: TaskStatus }[] = [
     { title: "Completed", key: "Completed" },
     { title: "In Process", key: "In Process" },
@@ -557,7 +652,7 @@ function buildThreeWeekText(tasks: Task[], columns: Column[]): string {
   lines.push("");
 
   for (const section of sections) {
-    const items = tasks.filter((t) => t.status === section.key);
+    const items = tasks.filter((t) => getDisplayStatus(t, today) === section.key);
     lines.push(section.title);
     if (!items.length) {
       lines.push("  (No items)");
@@ -578,11 +673,12 @@ function buildThreeWeekText(tasks: Task[], columns: Column[]): string {
 }
 
 function buildOwnerUpdateText(tasks: Task[], columns: Column[]): string {
+  const today = startOfDay(new Date());
   const UPCOMING: TaskStatus[] = ["This week", "Next week", "Week After"];
   const colName = (id: string) => columns.find(c => c.id === id)?.name || "Unknown";
-  const completed = tasks.filter(t => t.status === "Completed");
-  const inProcess = tasks.filter(t => t.status === "In Process");
-  const upcoming = tasks.filter(t => UPCOMING.includes(t.status));
+  const completed = tasks.filter(t => getDisplayStatus(t, today) === "Completed");
+  const inProcess = tasks.filter(t => getDisplayStatus(t, today) === "In Process");
+  const upcoming = tasks.filter(t => UPCOMING.includes(getDisplayStatus(t, today)));
 
   const lines: string[] = [];
   lines.push("Owner Update");
@@ -614,6 +710,7 @@ function buildOwnerUpdateText(tasks: Task[], columns: Column[]): string {
 }
 
 function buildTaskSummaryText(tasks: Task[], columns: Column[]): string {
+  const today = startOfDay(new Date());
   const byCol: Record<string, Record<TaskStatus, number>> = {};
   for (const c of columns) {
     byCol[c.id] = STATUS_OPTIONS.reduce((acc, s) => {
@@ -623,13 +720,14 @@ function buildTaskSummaryText(tasks: Task[], columns: Column[]): string {
   }
   for (const t of tasks) {
     const days = typeof t.workDays === "number" ? t.workDays : 0;
+    const status = getDisplayStatus(t, today);
     if (!byCol[t.columnId]) {
       byCol[t.columnId] = STATUS_OPTIONS.reduce((acc, s) => {
         acc[s] = 0;
         return acc;
       }, {} as Record<TaskStatus, number>);
     }
-    byCol[t.columnId][t.status] += days;
+    byCol[t.columnId][status] += days;
   }
 
   const lines: string[] = [];
@@ -698,6 +796,7 @@ function openPrintWindowWithText(title: string, text: string) {
 // ============ Reports ===============
 function ThreeWeekReport({ tasks, columns, onClose }: { tasks: Task[]; columns: Column[]; onClose: () => void; }) {
   const textExport = useMemo(() => buildThreeWeekText(tasks, columns), [tasks, columns]);
+  const today = startOfDay(new Date());
 
   const sections: { title: string; key: TaskStatus }[] = [
     { title: "Completed", key: "Completed" },
@@ -723,7 +822,7 @@ function ThreeWeekReport({ tasks, columns, onClose }: { tasks: Task[]; columns: 
             </div>
           </div>
           {sections.map((section) => {
-            const items = tasks.filter((t) => t.status === section.key);
+            const items = tasks.filter((t) => getDisplayStatus(t, today) === section.key);
             return (
               <div key={section.key} className="mb-6">
                 <h3 className="text-lg font-semibold mb-2">{section.title}</h3>
@@ -757,12 +856,13 @@ function ThreeWeekReport({ tasks, columns, onClose }: { tasks: Task[]; columns: 
 
 function OwnerUpdateReport({ tasks, columns, onClose }: { tasks: Task[]; columns: Column[]; onClose: () => void; }) {
   const textExport = useMemo(() => buildOwnerUpdateText(tasks, columns), [tasks, columns]);
+  const today = startOfDay(new Date());
 
   const UPCOMING: TaskStatus[] = ["This week", "Next week", "Week After"];
   const colName = (id: string) => columns.find(c => c.id === id)?.name || "Unknown";
-  const completed = tasks.filter(t => t.status === "Completed");
-  const inProcess = tasks.filter(t => t.status === "In Process");
-  const upcoming = tasks.filter(t => UPCOMING.includes(t.status));
+  const completed = tasks.filter(t => getDisplayStatus(t, today) === "Completed");
+  const inProcess = tasks.filter(t => getDisplayStatus(t, today) === "In Process");
+  const upcoming = tasks.filter(t => UPCOMING.includes(getDisplayStatus(t, today)));
 
   return (
     <Sheet open onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -863,12 +963,14 @@ function TaskSummaryChart({
   onClose: () => void;
 }) {
   const data = useMemo(() => {
+    const today = startOfDay(new Date());
     const byCol: Record<string, any> = {};
     for (const c of columns) byCol[c.id] = { column: c.name };
     for (const t of tasks) {
       const days = typeof t.workDays === "number" ? t.workDays : 0;
+      const status = getDisplayStatus(t, today);
       if (!byCol[t.columnId]) byCol[t.columnId] = { column: "Unknown" };
-      byCol[t.columnId][t.status] = (byCol[t.columnId][t.status] || 0) + days;
+      byCol[t.columnId][status] = (byCol[t.columnId][status] || 0) + days;
     }
     return Object.values(byCol);
   }, [tasks, columns]);
@@ -932,15 +1034,12 @@ export default function App() {
   const {
     columns,
     tasks,
-    tasksByColumn,
     boardLoading,
     boardError,
     setBoard,
     saveTask,
     deleteTask,
     removeColumn,
-    handleDragOver,
-    handleDragEnd,
     scheduleSaveBoard,
   } = useBoard(authUserId, currentProjectId);
 
@@ -951,7 +1050,9 @@ export default function App() {
   const [showSummary, setShowSummary] = useState(false);
   const [collapsedPhaseIds, setCollapsedPhaseIds] = useState<Set<string>>(() => new Set());
 
-  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const [cameraInputKey, setCameraInputKey] = useState(0);
+  const cameraReopenPendingRef = useRef(false);
   const pendingPhotoIdRef = useRef<string | null>(null);
   const [photoModalOpen, setPhotoModalOpen] = useState(false);
   const [photoPreviewUri, setPhotoPreviewUri] = useState<string | null>(null);
@@ -973,11 +1074,11 @@ export default function App() {
 
 
   const isAuthed = !!authUserId;
-
-  const sensors = useSensors(
-    useSensor(MouseSensor),
-    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  const todayStamp = startOfDay(new Date()).getTime();
+  const today = new Date(todayStamp);
+  const tasksByColumnSorted = useMemo(
+    () => groupTasksByColumn(tasks, columns, today),
+    [tasks, columns, todayStamp]
   );
 
   function isPhaseCollapsed(id: string) {
@@ -1153,7 +1254,7 @@ export default function App() {
   }, [authUserId]);
 
   // Board loading handled by `useBoard` hook
-  // `tasksByColumn` provided by `useBoard`
+  // Tasks are grouped + sorted locally for display
 
   // ================= Project CRUD =================
   async function refreshProjectsAndSelect(preferId?: string) {
@@ -1336,11 +1437,12 @@ export default function App() {
     const header = ["Phase", "Title", "Status", "WorkDays"];
     const colName = (id: string) => columns.find(c => c.id === id)?.name || "";
     const rows = [header];
+    const today = startOfDay(new Date());
     for (const t of tasks) {
       rows.push([
         colName(t.columnId),
         t.title,
-        t.status,
+        getDisplayStatus(t, today),
         typeof t.workDays === "number" ? String(t.workDays) : ""
       ]);
     }
@@ -1438,6 +1540,28 @@ export default function App() {
     cameraInputRef.current?.click();
   }
 
+  function resetPhotoCaptureState({ reopenCamera = false }: { reopenCamera?: boolean } = {}) {
+    pendingPhotoIdRef.current = null;
+    setPhotoAttachment(null);
+    setPhotoProcessing(false);
+    setPhotoPreviewUri((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    if (cameraInputRef.current) {
+      cameraInputRef.current.value = "";
+    }
+    cameraInputRef.current = null;
+    if (reopenCamera) cameraReopenPendingRef.current = true;
+    setCameraInputKey((prev) => prev + 1);
+  }
+
+  useEffect(() => {
+    if (!cameraReopenPendingRef.current) return;
+    cameraReopenPendingRef.current = false;
+    triggerCamera();
+  }, [cameraInputKey]);
+
   function handleCameraCapture(file: File) {
     const previewUrl = URL.createObjectURL(file);
     setPhotoPreviewUri((prev) => {
@@ -1468,13 +1592,7 @@ export default function App() {
 
   function handleClosePhotoModal() {
     setPhotoModalOpen(false);
-    setPhotoAttachment(null);
-    setPhotoProcessing(false);
-    pendingPhotoIdRef.current = null;
-    setPhotoPreviewUri((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
-    });
+    resetPhotoCaptureState();
   }
 
   function handleSavePhotoTask(payload: {
@@ -1511,6 +1629,7 @@ export default function App() {
       <CameraTaskButton
         onCapture={handleCameraCapture}
         inputRef={cameraInputRef}
+        inputKey={cameraInputKey}
         disabled={false}
       />
       <div
@@ -1937,144 +2056,78 @@ export default function App() {
           </div>
         </header>
 
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragOver={handleDragOver}
-          onDragEnd={handleDragEnd}
-        >
-          <div className="w-full border rounded-2xl bg-white p-4 sm:p-6">
-            <SortableContext
-              items={columns.map((c) => `col:${c.id}`)}
-              strategy={verticalListSortingStrategy}
-            >
-              <div className="flex flex-col gap-2 w-full">
-                {columns.length === 0 ? (
-                  <div className="text-sm opacity-60">No phases yet.</div>
-                ) : (
-                  columns.map((c) => {
-                    const items = tasksByColumn[c.id] || [];
-                    return (
-                      <div key={c.id} className="w-full">
-                        <SortableColumn column={c}>
-                          {({ setActivatorNodeRef, attributes, listeners }) => (
-                            <div className="bg-transparent rounded-none shadow-none p-0 border-b border-neutral-200">
-                              {/* Phase Header as Section Title */}
-                              <div className="mb-3 pb-2 border-b-2 border-neutral-300">
-                                <div className="flex items-center gap-2">
-                                  <div
-                                    ref={setActivatorNodeRef}
-                                    {...attributes}
-                                    {...listeners}
-                                    className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/60"
-                                    aria-label="Move Phase"
-                                    title="Move Phase"
-                                  >
-                                    <GripVertical className="h-3 w-3" />
-                                  </div>
-                                  <div
-                                    className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
-                                    onClick={() => setOpenColumn(c)}
-                                  >
-                                    {c.name}
-                                  </div>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-8 w-8 p-0"
-                                    onClick={() => togglePhaseCollapsed(c.id)}
-                                    title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                                    aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                                  >
-                                    {isPhaseCollapsed(c.id) ? (
-                                      <ChevronRight className="h-4 w-4" />
-                                    ) : (
-                                      <ChevronDown className="h-4 w-4" />
-                                    )}
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-8 w-8 p-0"
-                                    onClick={() => setOpenTask({
-                                      id: "",
-                                      title: "",
-                                      columnId: c.id,
-                                      phaseId: c.id,
-                                      assignedUserId: authUserId || "",
-                                      startDate: undefined,
-                                      endDate: undefined,
-                                      photo: undefined,
-                                      status: "Unassigned",
-                                      workDays: undefined,
-                                    })}
-                                    title="Add Task"
-                                  >
-                                    <Plus className="h-4 w-4" />
-                                  </Button>
-                                </div>
-                              </div>
-
-                              {!isPhaseCollapsed(c.id) && (
-                                <>
-                                  {/* Tasks Container - Indented */}
-                                  <ColumnDropZone columnId={c.id}>
-                                    <div className="w-full pl-6 space-y-2 mb-4">
-                                      <SortableContext items={items.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                                        {items.map((t) => (
-                                          <SortableTask
-                                            key={t.id}
-                                            task={t}
-                                            onEdit={(tk) => setOpenTask(tk)}
-                                            onDelete={(id) => deleteTask(id)}
-                                            onRename={saveTask}
-                                            onViewPhoto={(photo) => setPhotoViewer(photo)}
-                                          />
-                                        ))}
-                                      </SortableContext>
-                                      <QuickAddTask
-                                        columnId={c.id}
-                                        onCreate={(columnId, title) =>
-                                          saveTask({
-                                            id: "",
-                                            title,
-                                            columnId,
-                                            phaseId: columnId,
-                                            assignedUserId: authUserId || "",
-                                            startDate: undefined,
-                                            endDate: undefined,
-                                            photo: undefined,
-                                            status: "Unassigned",
-                                            workDays: undefined,
-                                          })
-                                        }
-                                      />
-                                    </div>
-                                  </ColumnDropZone>
-
-                                  <div className="flex justify-end mb-4">
-                                    <Button
-                                      variant="secondary"
-                                      size="sm"
-                                      className="text-xs"
-                                      onClick={() => removeColumn(c.id)}
-                                    >
-                                      <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
-                                    </Button>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </SortableColumn>
+        <div className="w-full border rounded-2xl bg-white p-4 sm:p-6">
+          <div className="flex flex-col gap-2 w-full">
+            {columns.length === 0 ? (
+              <div className="text-sm opacity-60">No phases yet.</div>
+            ) : (
+              columns.map((c) => {
+                const items = tasksByColumnSorted[c.id] || [];
+                return (
+                  <div key={c.id} className="w-full">
+                    <div className="bg-transparent rounded-none shadow-none p-0 border-b border-neutral-200">
+                      {/* Phase Header as Section Title */}
+                      <div className="mb-3 pb-2 border-b-2 border-neutral-300">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
+                            onClick={() => setOpenColumn(c)}
+                          >
+                            {c.name}
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0"
+                            onClick={() => togglePhaseCollapsed(c.id)}
+                            title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                            aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                          >
+                            {isPhaseCollapsed(c.id) ? (
+                              <ChevronRight className="h-4 w-4" />
+                            ) : (
+                              <ChevronDown className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </div>
                       </div>
-                    );
-                  })
-                )}
-              </div>
-            </SortableContext>
+
+                      {!isPhaseCollapsed(c.id) && (
+                        <>
+                          {/* Tasks Container - Indented */}
+                          <div className="w-full pl-6 space-y-2 mb-4">
+                            {items.map((t) => (
+                              <TaskCard
+                                key={t.id}
+                                task={t}
+                                onEdit={(tk) => setOpenTask(tk)}
+                                onDelete={(id) => deleteTask(id)}
+                                onRename={saveTask}
+                                onViewPhoto={(photo) => setPhotoViewer(photo)}
+                                today={today}
+                              />
+                            ))}
+                          </div>
+
+                          <div className="flex justify-end mb-4">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              className="text-xs"
+                              onClick={() => removeColumn(c.id)}
+                            >
+                              <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
+                            </Button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
           </div>
-        </DndContext>
+        </div>
       </div>
 
       {showReport && <ThreeWeekReport tasks={tasks} columns={columns} onClose={() => setShowReport(false)} />}
@@ -2093,7 +2146,7 @@ export default function App() {
         defaultAssignedUserId={photoDefaults.assignedUserId}
         onClose={handleClosePhotoModal}
         onSave={handleSavePhotoTask}
-        onRequestPhoto={triggerCamera}
+        onRequestPhoto={() => resetPhotoCaptureState({ reopenCamera: true })}
         onPhaseChange={(value) => setPhotoDefaults((prev) => ({ ...prev, phaseId: value }))}
         onAssignedChange={(value) => setPhotoDefaults((prev) => ({ ...prev, assignedUserId: value }))}
       />
