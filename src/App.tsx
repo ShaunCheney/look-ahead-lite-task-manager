@@ -1709,27 +1709,26 @@ export default function App() {
     input.style.opacity = "0";
     input.style.pointerEvents = "none";
 
-    const cleanup = () => {
+    function cleanup() {
+      input.removeEventListener("change", handleChange);
+      window.removeEventListener("focus", handleWindowFocus);
       if (input.parentNode) input.parentNode.removeChild(input);
-    };
+    }
 
-    const handleFocus = () => {
+    function handleWindowFocus() {
       if (!input.files || input.files.length === 0) {
-        input.value = "";
         cleanup();
       }
-      window.removeEventListener("focus", handleFocus);
-    };
+    }
 
-    input.onchange = () => {
+    function handleChange() {
       const file = input.files?.[0];
       if (file) handleCameraCapture(file);
-      input.value = "";
       cleanup();
-      window.removeEventListener("focus", handleFocus);
-    };
+    }
 
-    window.addEventListener("focus", handleFocus);
+    input.addEventListener("change", handleChange, { once: true });
+    window.addEventListener("focus", handleWindowFocus, { once: true });
     document.body.appendChild(input);
     input.click();
   }
