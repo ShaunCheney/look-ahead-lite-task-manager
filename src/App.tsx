@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { v4 as uuid } from "uuid";
 import {
   DndContext,
@@ -26,6 +26,7 @@ import {
   Plus,
   Pencil,
   Camera,
+  Mic,
   ImagePlus,
   X,
   GripVertical,
@@ -349,7 +350,7 @@ function TaskCard({
   onEdit: (t: Task) => void;
   onDelete: (id: string) => void;
   onRename: (t: Task) => void;
-  onViewPhoto?: (photo: PhotoAttachment, task: Task) => void;
+  onViewPhoto?: (photos: PhotoAttachment[], startIndex: number) => void;
   today: Date;
   assignedLabel?: string;
 }) {
@@ -411,8 +412,8 @@ function TaskCard({
                   variant="ghost"
                   className="h-11 w-11 p-0 rounded-full sm:h-8 sm:w-8"
                   onClick={() => {
-                    if (!primaryPhoto || !onViewPhoto) return;
-                    onViewPhoto(primaryPhoto, task);
+                    if (!photos.length || !onViewPhoto) return;
+                    onViewPhoto(photos, 0);
                   }}
                   title="View photo"
                 >
@@ -513,6 +514,7 @@ function TaskEditor({
   onRequestFiles,
   onPhaseChange,
   onAssignedChange,
+  isMobile,
 }: {
   openTask: Task | null;
   onSave: (t: Task) => void;
@@ -526,18 +528,84 @@ function TaskEditor({
   onRequestFiles: (onPhotos: (photos: PhotoAttachment[]) => void) => void;
   onPhaseChange?: (value: string) => void;
   onAssignedChange?: (value: string) => void;
+  isMobile: boolean;
 }) {
   const [draft, setDraft] = useState<Task | null>(openTask);
-  const [photoViewerPhoto, setPhotoViewerPhoto] = useState<PhotoAttachment | null>(null);
+  const [photoViewer, setPhotoViewer] = useState<{ photos: PhotoAttachment[]; index: number } | null>(null);
+  const [isDictating, setIsDictating] = useState(false);
+  const recognitionRef = useRef<any>(null);
+
+  function stopDictation() {
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.onresult = null;
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.stop();
+      } catch {
+        // no-op
+      }
+      recognitionRef.current = null;
+    }
+    setIsDictating(false);
+  }
+
+  function startTitleDictation() {
+    const SpeechRecognition = (window as any)?.SpeechRecognition || (window as any)?.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert("Dictation is not supported in this browser.");
+      return;
+    }
+    if (isDictating) {
+      stopDictation();
+      return;
+    }
+    stopDictation();
+
+    const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
+    recognition.lang = "en-US";
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event: any) => {
+      let transcript = "";
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        if (event.results[i].isFinal) {
+          transcript += event.results[i][0]?.transcript || "";
+        }
+      }
+      const cleaned = transcript.trim();
+      if (!cleaned) return;
+      setDraft((prev) => {
+        if (!prev) return prev;
+        const spacer = prev.title && !prev.title.endsWith(" ") ? " " : "";
+        return { ...prev, title: `${prev.title}${spacer}${cleaned}`.trimStart() };
+      });
+    };
+
+    recognition.onend = () => {
+      setIsDictating(false);
+      recognitionRef.current = null;
+    };
+    recognition.onerror = () => {
+      setIsDictating(false);
+      recognitionRef.current = null;
+    };
+
+    setIsDictating(true);
+    recognition.start();
+  }
 
   useEffect(() => {
     if (!openTask) {
       setDraft(null);
-      setPhotoViewerPhoto(null);
+      setPhotoViewer(null);
+      stopDictation();
       return;
     }
     setDraft({ ...openTask, photos: openTask.photos ?? [] });
-    setPhotoViewerPhoto(null);
+    setPhotoViewer(null);
   }, [openTask]);
   useEffect(() => {
     if (!incomingPhotos.length) return;
@@ -550,8 +618,14 @@ function TaskEditor({
   }, [incomingPhotos, onConsumeIncomingPhotos]);
   if (!draft) return null;
 
-  const manualStatusValue = MANUAL_STATUS_OPTIONS.includes(draft.status) ? draft.status : "";
-  const statusPlaceholder = manualStatusValue ? "Select status" : "Derived from dates";
+  const derivedStatus = getDerivedStatus(draft);
+  const shouldOverrideStatus = !!derivedStatus && draft.status !== "Completed" && draft.status !== "Closed";
+  const manualStatusValue = !shouldOverrideStatus && MANUAL_STATUS_OPTIONS.includes(draft.status) ? draft.status : "";
+  const statusPlaceholder = shouldOverrideStatus
+    ? `${derivedStatus} (auto)`
+    : manualStatusValue
+      ? "Select status"
+      : "Derived from dates";
   const phaseOptions = columns;
   const selectedPhaseId = draft.phaseId || draft.columnId || phaseOptions[0]?.id || "";
   const userOptions = users;
@@ -563,6 +637,9 @@ function TaskEditor({
     : userOptions.length
       ? "Select user"
       : "No users";
+  const dictationSupported =
+    typeof window !== "undefined" &&
+    !!((window as any)?.SpeechRecognition || (window as any)?.webkitSpeechRecognition);
 
   function appendPhotos(next: PhotoAttachment[]) {
     if (!next.length) return;
@@ -575,19 +652,53 @@ function TaskEditor({
 
   return (
     <Sheet open={!!openTask} onOpenChange={(v) => { if (!v) onClose(); }}>
-      <SheetContent className="w-full sm:max-w-lg bg-white">
-        <SheetHeader>
-          <SheetTitle>{draft.id ? "Edit Task" : "New Task"}</SheetTitle>
+      <SheetContent className="w-full sm:max-w-lg bg-white overflow-y-auto [&>button]:hidden">
+        <SheetHeader className="sticky top-0 z-10 bg-white/95 backdrop-blur border-b border-neutral-200 pb-3">
+          <div className="flex items-center justify-between gap-3">
+            <SheetTitle>{draft.id ? "Edit Task" : "New Task"}</SheetTitle>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                className="rounded-full"
+                disabled={!canSave}
+                onClick={() => {
+                  onSave(draft);
+                  onClose();
+                }}
+              >
+                Save
+              </Button>
+              <Button size="sm" variant="secondary" className="rounded-full" onClick={onClose}>
+                Cancel
+              </Button>
+            </div>
+          </div>
         </SheetHeader>
-        <div className="mt-6 space-y-4">
+        <div className="mt-4 space-y-4">
           <div>
             <label className="text-xs font-medium">Title</label>
-            <Input
-              autoFocus
-              value={draft.title}
-              onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-              placeholder="e.g., Call vendor / Order material"
-            />
+            <div className="mt-1 flex items-center gap-2">
+              <Input
+                autoFocus
+                value={draft.title}
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+                placeholder="e.g., Call vendor / Order material"
+                className="flex-1"
+              />
+              <Button
+                type="button"
+                size="icon"
+                variant={isDictating ? "destructive" : "outline"}
+                className="shrink-0"
+                onClick={startTitleDictation}
+                disabled={!dictationSupported}
+                aria-pressed={isDictating}
+                aria-label={isDictating ? "Stop dictation" : "Start dictation"}
+                title={dictationSupported ? (isDictating ? "Stop dictation" : "Start dictation") : "Dictation not supported"}
+              >
+                <Mic className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
           <div>
@@ -656,16 +767,20 @@ function TaskEditor({
                 ))}
               </SelectContent>
             </Select>
-            {!manualStatusValue && (
+            {shouldOverrideStatus ? (
+              <div className="text-xs text-neutral-500 mt-1">
+                Date-based status: {derivedStatus}.
+              </div>
+            ) : !manualStatusValue ? (
               <div className="text-xs text-neutral-500 mt-1">
                 Date-based status is derived from dates.
               </div>
-            )}
+            ) : null}
           </div>
 
           <div>
             <label className="text-xs font-medium">Dates</label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-2">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-neutral-600">Start Date</label>
                 <Input
@@ -679,7 +794,7 @@ function TaskEditor({
                     }
                     setDraft({ ...draft, startDate: nextStartDate, endDate: nextEndDate });
                   }}
-                  className="h-12 text-base bg-white"
+                  className="h-10 text-sm bg-white"
                 />
               </div>
               <div className="space-y-1">
@@ -691,41 +806,41 @@ function TaskEditor({
                     const nextEndDate = normalizeDateInput(e.target.value);
                     setDraft({ ...draft, endDate: nextEndDate });
                   }}
-                  className="h-12 text-base bg-white"
+                  className="h-10 text-sm bg-white"
+                />
+              </div>
+              <div className="space-y-1 col-span-2 sm:col-span-1">
+                <label className="text-xs font-medium text-neutral-600">Work Days</label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={typeof draft.workDays === "number" ? String(draft.workDays) : ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    const n = v === "" ? undefined : Math.max(0, Math.floor(Number(v)));
+                    let nextEndDate = draft.endDate;
+                    if (draft.startDate && typeof n === "number") {
+                      nextEndDate = computeEndDate(draft.startDate, n) ?? nextEndDate;
+                    }
+                    setDraft({ ...draft, workDays: n, endDate: nextEndDate });
+                  }}
+                  placeholder="e.g., 3"
+                  className="h-10 text-sm bg-white"
                 />
               </div>
             </div>
-          </div>
-
-          <div>
-            <label className="text-xs font-medium">Work days</label>
-            <Input
-              type="number"
-              min={0}
-              step={1}
-              value={typeof draft.workDays === "number" ? String(draft.workDays) : ""}
-              onChange={(e) => {
-                const v = e.target.value;
-                const n = v === "" ? undefined : Math.max(0, Math.floor(Number(v)));
-                let nextEndDate = draft.endDate;
-                if (draft.startDate && typeof n === "number") {
-                  nextEndDate = computeEndDate(draft.startDate, n) ?? nextEndDate;
-                }
-                setDraft({ ...draft, workDays: n, endDate: nextEndDate });
-              }}
-              placeholder="e.g., 3"
-            />
           </div>
           <div>
             <label className="text-xs font-medium">Photos</label>
             {photos.length ? (
               <div className="mt-2 grid grid-cols-3 gap-2">
-                {photos.map((photo) => (
+                {photos.map((photo, index) => (
                   <div key={photo.id} className="relative">
                     <button
                       type="button"
                       className="block w-full overflow-hidden rounded-lg border border-neutral-200 bg-neutral-100"
-                      onClick={() => setPhotoViewerPhoto(photo)}
+                      onClick={() => setPhotoViewer({ photos, index })}
                       title="View photo"
                     >
                       <img
@@ -757,15 +872,17 @@ function TaskEditor({
               <div className="mt-2 text-xs text-neutral-500">No photos yet.</div>
             )}
             <div className="mt-2 flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                className="rounded-full"
-                onClick={() => onRequestCamera(appendPhotos)}
-              >
-                <Camera className="h-4 w-4 mr-2" />
-                Add from camera
-              </Button>
+              {isMobile && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="rounded-full"
+                  onClick={() => onRequestCamera(appendPhotos)}
+                >
+                  <Camera className="h-4 w-4 mr-2" />
+                  Add from camera
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="secondary"
@@ -777,27 +894,13 @@ function TaskEditor({
               </Button>
             </div>
           </div>
-          <div className="pt-2 flex gap-2">
-            <Button
-              className="rounded-2xl"
-              disabled={!canSave}
-              onClick={() => {
-                onSave(draft);
-                onClose();
-              }}
-            >
-              Save
-            </Button>
-            <Button variant="secondary" className="rounded-2xl" onClick={onClose}>
-              Cancel
-            </Button>
-          </div>
         </div>
       </SheetContent>
       <TaskPhotoViewer
-        open={!!photoViewerPhoto}
-        photo={photoViewerPhoto}
-        onClose={() => setPhotoViewerPhoto(null)}
+        open={!!photoViewer}
+        photos={photoViewer?.photos}
+        initialIndex={photoViewer?.index ?? 0}
+        onClose={() => setPhotoViewer(null)}
       />
     </Sheet>
   );
@@ -1271,7 +1374,7 @@ export default function App() {
   const [showSummary, setShowSummary] = useState(false);
   const [collapsedPhaseIds, setCollapsedPhaseIds] = useState<Set<string>>(() => new Set());
 
-  const [photoViewer, setPhotoViewer] = useState<PhotoAttachment | null>(null);
+  const [photoViewer, setPhotoViewer] = useState<{ photos: PhotoAttachment[]; index: number } | null>(null);
   const [queuedPhotos, setQueuedPhotos] = useState<PhotoAttachment[]>([]);
 
   const [users, setUsers] = useState<UserOption[]>([]);
@@ -2306,102 +2409,100 @@ export default function App() {
             items={columns.map((c) => `col:${c.id}`)}
             strategy={verticalListSortingStrategy}
           >
-            <div className="w-full border rounded-2xl bg-white p-4 pt-5 sm:p-6 sm:pt-6">
-              <div className="flex flex-col gap-4 w-full">
-                {columns.length === 0 ? (
-                  <div className="text-sm opacity-60">No phases yet.</div>
-                ) : (
-                  columns.map((c) => {
-                    const items = tasksByColumnSorted[c.id] || [];
-                    return (
-                      <div key={c.id} className="w-full">
-                        <SortableColumn column={c}>
-                          {({ setActivatorNodeRef, attributes, listeners }) => (
-                            <div className="rounded-2xl border border-neutral-200 bg-neutral-50/70 p-3 sm:p-4 shadow-sm">
-                              {/* Phase Header */}
-                              <div className="flex items-center gap-2">
-                                <div
-                                  ref={setActivatorNodeRef}
-                                  {...attributes}
-                                  {...listeners}
-                                  className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/70 flex-shrink-0"
-                                  aria-label="Move Phase"
-                                  title="Move Phase"
-                                >
-                                  <GripVertical className="h-3 w-3" />
-                                </div>
-                                <div
-                                  className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
-                                  onClick={() => setOpenColumn(c)}
-                                >
-                                  {c.name}
-                                </div>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-8 w-8 p-0"
-                                  onClick={() => handleAddTaskForPhase(c.id)}
-                                  title="Add Task"
-                                  aria-label="Add Task"
-                                >
-                                  <Plus className="h-4 w-4" />
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  className="h-8 w-8 p-0"
-                                  onClick={() => togglePhaseCollapsed(c.id)}
-                                  title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                                  aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                                >
-                                  {isPhaseCollapsed(c.id) ? (
-                                    <ChevronRight className="h-4 w-4" />
-                                  ) : (
-                                    <ChevronDown className="h-4 w-4" />
-                                  )}
-                                </Button>
+            <div className="flex flex-col gap-4 w-full">
+              {columns.length === 0 ? (
+                <div className="text-sm opacity-60">No phases yet.</div>
+              ) : (
+                columns.map((c) => {
+                  const items = tasksByColumnSorted[c.id] || [];
+                  return (
+                    <div key={c.id} className="w-full">
+                      <SortableColumn column={c}>
+                        {({ setActivatorNodeRef, attributes, listeners }) => (
+                          <div className="rounded-2xl border border-neutral-200 bg-neutral-50/70 p-3 sm:p-4 shadow-sm">
+                            {/* Phase Header */}
+                            <div className="flex items-center gap-2">
+                              <div
+                                ref={setActivatorNodeRef}
+                                {...attributes}
+                                {...listeners}
+                                className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/70 flex-shrink-0"
+                                aria-label="Move Phase"
+                                title="Move Phase"
+                              >
+                                <GripVertical className="h-3 w-3" />
                               </div>
-
-                              {!isPhaseCollapsed(c.id) && (
-                                <>
-                                  <div className="mt-3 space-y-2">
-                                    {items.map((t) => (
-                                      <TaskCard
-                                        key={t.id}
-                                        task={t}
-                                        onEdit={(tk) => {
-                                          setQueuedPhotos([]);
-                                          setOpenTask(tk);
-                                        }}
-                                        onDelete={(id) => deleteTask(id)}
-                                        onRename={saveTask}
-                                        onViewPhoto={(photo) => setPhotoViewer(photo)}
-                                        today={today}
-                                        assignedLabel={userLabelById.get(t.assignedUserId)}
-                                      />
-                                    ))}
-                                  </div>
-
-                                  <div className="flex justify-end mt-3">
-                                    <Button
-                                      variant="secondary"
-                                      size="sm"
-                                      className="text-xs"
-                                      onClick={() => removeColumn(c.id)}
-                                    >
-                                      <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
-                                    </Button>
-                                  </div>
-                                </>
-                              )}
+                              <div
+                                className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
+                                onClick={() => setOpenColumn(c)}
+                              >
+                                {c.name}
+                              </div>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-8 w-8 p-0"
+                                onClick={() => handleAddTaskForPhase(c.id)}
+                                title="Add Task"
+                                aria-label="Add Task"
+                              >
+                                <Plus className="h-4 w-4" />
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-8 w-8 p-0"
+                                onClick={() => togglePhaseCollapsed(c.id)}
+                                title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                              >
+                                {isPhaseCollapsed(c.id) ? (
+                                  <ChevronRight className="h-4 w-4" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4" />
+                                )}
+                              </Button>
                             </div>
-                          )}
-                        </SortableColumn>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
+
+                            {!isPhaseCollapsed(c.id) && (
+                              <>
+                                <div className="mt-3 space-y-2">
+                                  {items.map((t) => (
+                                    <TaskCard
+                                      key={t.id}
+                                      task={t}
+                                      onEdit={(tk) => {
+                                        setQueuedPhotos([]);
+                                        setOpenTask(tk);
+                                      }}
+                                      onDelete={(id) => deleteTask(id)}
+                                      onRename={saveTask}
+                                      onViewPhoto={(photos, index) => setPhotoViewer({ photos, index })}
+                                      today={today}
+                                      assignedLabel={userLabelById.get(t.assignedUserId)}
+                                    />
+                                  ))}
+                                </div>
+
+                                <div className="flex justify-end mt-3">
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    className="text-xs"
+                                    onClick={() => removeColumn(c.id)}
+                                  >
+                                    <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
+                                  </Button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </SortableColumn>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </SortableContext>
         </DndContext>
@@ -2413,7 +2514,8 @@ export default function App() {
 
       <TaskPhotoViewer
         open={!!photoViewer}
-        photo={photoViewer}
+        photos={photoViewer?.photos}
+        initialIndex={photoViewer?.index ?? 0}
         onClose={() => setPhotoViewer(null)}
       />
 
@@ -2433,6 +2535,7 @@ export default function App() {
         onRequestFiles={(onPhotos) => requestImageAttachments({ onComplete: onPhotos })}
         onPhaseChange={(value) => setTaskDefaults((prev) => ({ ...prev, phaseId: value }))}
         onAssignedChange={(value) => setTaskDefaults((prev) => ({ ...prev, assignedUserId: value }))}
+        isMobile={isMobile}
       />
       {openColumn !== undefined && (
         <ColumnEditor
