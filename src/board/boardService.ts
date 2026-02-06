@@ -29,7 +29,7 @@ export interface Task {
   assignedUserId: string;
   startDate?: string;
   endDate?: string;
-  photo?: PhotoAttachment;
+  photos?: PhotoAttachment[];
   notes?: string;
   columnId: string;
   status: TaskStatus;
@@ -41,6 +41,7 @@ type TaskMeta = {
   assignedUserId?: string;
   startDate?: string;
   endDate?: string;
+  photos?: PhotoAttachment[];
   photo?: PhotoAttachment;
 };
 
@@ -98,6 +99,11 @@ export async function loadBoardFromSupabase(projectId: string, authUserId?: stri
     const meta = parsed.meta;
     const columnId = r.column_id as string;
     const phaseId = meta?.phaseId || columnId;
+    const metaPhotos = Array.isArray(meta?.photos)
+      ? meta?.photos
+      : meta?.photo
+        ? [meta.photo]
+        : undefined;
     return {
       id: r.id,
       title: r.title,
@@ -109,7 +115,7 @@ export async function loadBoardFromSupabase(projectId: string, authUserId?: stri
       assignedUserId: meta?.assignedUserId || authUserId || "",
       startDate: meta?.startDate,
       endDate: meta?.endDate,
-      photo: meta?.photo,
+      photos: metaPhotos && metaPhotos.length ? metaPhotos : undefined,
     };
   });
 
@@ -155,7 +161,7 @@ export async function saveBoardToSupabase(nextCols: Column[], nextTasks: Task[],
       assignedUserId: t.assignedUserId,
       startDate: t.startDate,
       endDate: t.endDate,
-      photo: t.photo,
+      photos: t.photos && t.photos.length ? t.photos : undefined,
     };
     return {
       id: t.id,

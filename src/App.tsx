@@ -1,5 +1,5 @@
 import { supabase } from "./supabaseClient";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { v4 as uuid } from "uuid";
 import {
   DndContext,
@@ -20,12 +20,14 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useBoard } from "./hooks/useBoard";
 import { buildTaskNotes, computeTaskSortOrders, seedDefaultColumnsInSupabase as seedCols, type PhotoAttachment, type Task, type TaskStatus } from "./board/boardService";
-import { CameraTaskButton, PhotoTaskModal, TaskPhotoViewer, type UserOption } from "./components/photo-task";
+import { CameraTaskButton, TaskPhotoViewer, type UserOption } from "./components/photo-task";
 
 import {
   Plus,
   Pencil,
   Camera,
+  ImagePlus,
+  X,
   GripVertical,
   Columns,
   Download,
@@ -355,8 +357,9 @@ function TaskCard({
   const tone = getStatusClasses(displayStatus);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
-  const photo = task.photo;
-  const canViewPhoto = !!photo && !!onViewPhoto;
+  const photos = task.photos || [];
+  const primaryPhoto = photos[0];
+  const canViewPhoto = !!primaryPhoto && !!onViewPhoto;
   const assignedInitials = assignedLabel ? buildInitials(assignedLabel) : "";
   const assignedDisplay = assignedLabel
     ? (assignedLabel.length <= 8 ? assignedLabel : (assignedInitials || assignedLabel))
@@ -408,8 +411,8 @@ function TaskCard({
                   variant="ghost"
                   className="h-11 w-11 p-0 rounded-full sm:h-8 sm:w-8"
                   onClick={() => {
-                    if (!photo || !onViewPhoto) return;
-                    onViewPhoto(photo, task);
+                    if (!primaryPhoto || !onViewPhoto) return;
+                    onViewPhoto(primaryPhoto, task);
                   }}
                   title="View photo"
                 >
@@ -504,6 +507,12 @@ function TaskEditor({
   columns,
   users,
   usersLoading,
+  incomingPhotos,
+  onConsumeIncomingPhotos,
+  onRequestCamera,
+  onRequestFiles,
+  onPhaseChange,
+  onAssignedChange,
 }: {
   openTask: Task | null;
   onSave: (t: Task) => void;
@@ -511,14 +520,34 @@ function TaskEditor({
   columns: Column[];
   users: UserOption[];
   usersLoading: boolean;
+  incomingPhotos: PhotoAttachment[];
+  onConsumeIncomingPhotos: () => void;
+  onRequestCamera: (onPhotos: (photos: PhotoAttachment[]) => void) => void;
+  onRequestFiles: (onPhotos: (photos: PhotoAttachment[]) => void) => void;
+  onPhaseChange?: (value: string) => void;
+  onAssignedChange?: (value: string) => void;
 }) {
   const [draft, setDraft] = useState<Task | null>(openTask);
-  const [photoViewerOpen, setPhotoViewerOpen] = useState(false);
+  const [photoViewerPhoto, setPhotoViewerPhoto] = useState<PhotoAttachment | null>(null);
 
   useEffect(() => {
-    setDraft(openTask);
-    setPhotoViewerOpen(false);
+    if (!openTask) {
+      setDraft(null);
+      setPhotoViewerPhoto(null);
+      return;
+    }
+    setDraft({ ...openTask, photos: openTask.photos ?? [] });
+    setPhotoViewerPhoto(null);
   }, [openTask]);
+  useEffect(() => {
+    if (!incomingPhotos.length) return;
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const nextPhotos = [...(prev.photos ?? []), ...incomingPhotos];
+      return { ...prev, photos: nextPhotos };
+    });
+    onConsumeIncomingPhotos();
+  }, [incomingPhotos, onConsumeIncomingPhotos]);
   if (!draft) return null;
 
   const manualStatusValue = MANUAL_STATUS_OPTIONS.includes(draft.status) ? draft.status : "";
@@ -527,11 +556,22 @@ function TaskEditor({
   const selectedPhaseId = draft.phaseId || draft.columnId || phaseOptions[0]?.id || "";
   const userOptions = users;
   const assignedUserId = draft.assignedUserId || "";
+  const photos = draft.photos ?? [];
+  const canSave = !!selectedPhaseId && draft.title.trim().length > 0;
   const usersPlaceholder = usersLoading
     ? "Loading users..."
     : userOptions.length
       ? "Select user"
       : "No users";
+
+  function appendPhotos(next: PhotoAttachment[]) {
+    if (!next.length) return;
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const existing = prev.photos ?? [];
+      return { ...prev, photos: [...existing, ...next] };
+    });
+  }
 
   return (
     <Sheet open={!!openTask} onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -540,21 +580,6 @@ function TaskEditor({
           <SheetTitle>{draft.id ? "Edit Task" : "New Task"}</SheetTitle>
         </SheetHeader>
         <div className="mt-6 space-y-4">
-          {draft.photo && (
-            <button
-              type="button"
-              className="w-full overflow-hidden rounded-xl border border-neutral-200 bg-neutral-100"
-              onClick={() => setPhotoViewerOpen(true)}
-              title="Tap to view photo"
-            >
-              <img
-                src={draft.photo.uri}
-                alt="Task"
-                className="w-full max-h-[35vh] object-contain bg-black/90"
-              />
-            </button>
-          )}
-
           <div>
             <label className="text-xs font-medium">Title</label>
             <Input
@@ -569,7 +594,10 @@ function TaskEditor({
             <label className="text-xs font-medium">Phase</label>
             <Select
               value={selectedPhaseId}
-              onValueChange={(value) => setDraft({ ...draft, columnId: value, phaseId: value })}
+              onValueChange={(value) => {
+                setDraft({ ...draft, columnId: value, phaseId: value });
+                onPhaseChange?.(value);
+              }}
               disabled={!phaseOptions.length}
             >
               <SelectTrigger className="w-full bg-white">
@@ -583,13 +611,19 @@ function TaskEditor({
                 ))}
               </SelectContent>
             </Select>
+            {!phaseOptions.length && (
+              <div className="text-xs text-neutral-500 mt-1">Create a phase before saving a task.</div>
+            )}
           </div>
 
           <div>
             <label className="text-xs font-medium">Assigned To</label>
             <Select
               value={assignedUserId}
-              onValueChange={(value) => setDraft({ ...draft, assignedUserId: value })}
+              onValueChange={(value) => {
+                setDraft({ ...draft, assignedUserId: value });
+                onAssignedChange?.(value);
+              }}
               disabled={usersLoading || !userOptions.length}
             >
               <SelectTrigger className="w-full bg-white">
@@ -682,10 +716,71 @@ function TaskEditor({
               placeholder="e.g., 3"
             />
           </div>
+          <div>
+            <label className="text-xs font-medium">Photos</label>
+            {photos.length ? (
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                {photos.map((photo) => (
+                  <div key={photo.id} className="relative">
+                    <button
+                      type="button"
+                      className="block w-full overflow-hidden rounded-lg border border-neutral-200 bg-neutral-100"
+                      onClick={() => setPhotoViewerPhoto(photo)}
+                      title="View photo"
+                    >
+                      <img
+                        src={photo.uri}
+                        alt="Task attachment"
+                        className="h-24 w-full object-cover"
+                      />
+                    </button>
+                    <button
+                      type="button"
+                      className="absolute top-1 right-1 rounded-full bg-black/70 p-1 text-white hover:bg-black/80"
+                      onClick={() => {
+                        setDraft((prev) => {
+                          if (!prev) return prev;
+                          return {
+                            ...prev,
+                            photos: (prev.photos ?? []).filter((p) => p.id !== photo.id),
+                          };
+                        });
+                      }}
+                      aria-label="Remove photo"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="mt-2 text-xs text-neutral-500">No photos yet.</div>
+            )}
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className="rounded-full"
+                onClick={() => onRequestCamera(appendPhotos)}
+              >
+                <Camera className="h-4 w-4 mr-2" />
+                Add from camera
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                className="rounded-full"
+                onClick={() => onRequestFiles(appendPhotos)}
+              >
+                <ImagePlus className="h-4 w-4 mr-2" />
+                Add from files
+              </Button>
+            </div>
+          </div>
           <div className="pt-2 flex gap-2">
             <Button
               className="rounded-2xl"
-              disabled={!draft.title.trim()}
+              disabled={!canSave}
               onClick={() => {
                 onSave(draft);
                 onClose();
@@ -700,9 +795,9 @@ function TaskEditor({
         </div>
       </SheetContent>
       <TaskPhotoViewer
-        open={photoViewerOpen}
-        photo={draft.photo}
-        onClose={() => setPhotoViewerOpen(false)}
+        open={!!photoViewerPhoto}
+        photo={photoViewerPhoto}
+        onClose={() => setPhotoViewerPhoto(null)}
       />
     </Sheet>
   );
@@ -1176,16 +1271,12 @@ export default function App() {
   const [showSummary, setShowSummary] = useState(false);
   const [collapsedPhaseIds, setCollapsedPhaseIds] = useState<Set<string>>(() => new Set());
 
-  const pendingPhotoIdRef = useRef<string | null>(null);
-  const [photoModalOpen, setPhotoModalOpen] = useState(false);
-  const [photoPreviewUri, setPhotoPreviewUri] = useState<string | null>(null);
-  const [photoAttachment, setPhotoAttachment] = useState<PhotoAttachment | null>(null);
-  const [photoProcessing, setPhotoProcessing] = useState(false);
   const [photoViewer, setPhotoViewer] = useState<PhotoAttachment | null>(null);
+  const [queuedPhotos, setQueuedPhotos] = useState<PhotoAttachment[]>([]);
 
   const [users, setUsers] = useState<UserOption[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
-  const [photoDefaults, setPhotoDefaults] = useState<{ phaseId: string; assignedUserId: string }>({
+  const [taskDefaults, setTaskDefaults] = useState<{ phaseId: string; assignedUserId: string }>({
     phaseId: "",
     assignedUserId: "",
   });
@@ -1294,20 +1385,20 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!photoDefaults.phaseId && columns.length) {
-      setPhotoDefaults((prev) => ({ ...prev, phaseId: columns[0].id }));
+    if (!taskDefaults.phaseId && columns.length) {
+      setTaskDefaults((prev) => ({ ...prev, phaseId: columns[0].id }));
       return;
     }
-    if (photoDefaults.phaseId && columns.length && !columns.some((c) => c.id === photoDefaults.phaseId)) {
-      setPhotoDefaults((prev) => ({ ...prev, phaseId: columns[0].id }));
+    if (taskDefaults.phaseId && columns.length && !columns.some((c) => c.id === taskDefaults.phaseId)) {
+      setTaskDefaults((prev) => ({ ...prev, phaseId: columns[0].id }));
     }
-  }, [columns, photoDefaults.phaseId]);
+  }, [columns, taskDefaults.phaseId]);
 
   useEffect(() => {
-    if (authUserId && !photoDefaults.assignedUserId) {
-      setPhotoDefaults((prev) => ({ ...prev, assignedUserId: authUserId }));
+    if (authUserId && !taskDefaults.assignedUserId) {
+      setTaskDefaults((prev) => ({ ...prev, assignedUserId: authUserId }));
     }
-  }, [authUserId, photoDefaults.assignedUserId]);
+  }, [authUserId, taskDefaults.assignedUserId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1535,7 +1626,7 @@ export default function App() {
         assignedUserId: t.assignedUserId,
         startDate: t.startDate,
         endDate: t.endDate,
-        photo: t.photo,
+        photos: t.photos,
       }),
       status: t.status,
       work_days: typeof t.workDays === "number" ? t.workDays : null,
@@ -1664,7 +1755,7 @@ export default function App() {
               assignedUserId: authUserId || "",
               startDate: undefined,
               endDate: undefined,
-              photo: undefined,
+              photos: [],
               status,
               workDays: daysNum,
             });
@@ -1689,106 +1780,86 @@ export default function App() {
     input.click();
   }
 
-  function resetPhotoCaptureState() {
-    pendingPhotoIdRef.current = null;
-    setPhotoAttachment(null);
-    setPhotoProcessing(false);
-    setPhotoPreviewUri((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return null;
+  function readFilesAsAttachments(files: File[]): Promise<PhotoAttachment[]> {
+    const work = files.map((file) => {
+      const photoId = uuid();
+      return new Promise<PhotoAttachment | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = String(reader.result || "");
+          if (!dataUrl) {
+            resolve(null);
+            return;
+          }
+          resolve({ id: photoId, uri: dataUrl });
+        };
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+      });
     });
+    return Promise.all(work).then((results) => results.filter(Boolean) as PhotoAttachment[]);
   }
 
-  function requestCamera() {
-    resetPhotoCaptureState();
+  function requestImageAttachments(options: {
+    capture?: "environment";
+    onComplete: (photos: PhotoAttachment[]) => void;
+  }) {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*";
-    input.capture = "environment";
-    input.style.position = "fixed";
-    input.style.opacity = "0";
-    input.style.pointerEvents = "none";
+    input.multiple = true;
+    if (options.capture) input.capture = options.capture;
 
-    function cleanup() {
-      input.removeEventListener("change", handleChange);
-      window.removeEventListener("focus", handleWindowFocus);
-      if (input.parentNode) input.parentNode.removeChild(input);
-    }
-
-    function handleWindowFocus() {
-      if (!input.files || input.files.length === 0) {
-        cleanup();
-      }
-    }
-
-    function handleChange() {
-      const file = input.files?.[0];
-      if (file) handleCameraCapture(file);
-      cleanup();
-    }
+    const handleChange = () => {
+      const files = Array.from(input.files ?? []);
+      input.remove();
+      if (!files.length) return;
+      readFilesAsAttachments(files).then((photos) => {
+        if (photos.length) options.onComplete(photos);
+      });
+    };
 
     input.addEventListener("change", handleChange, { once: true });
-    window.addEventListener("focus", handleWindowFocus, { once: true });
     document.body.appendChild(input);
     input.click();
   }
 
-  function handleCameraCapture(file: File) {
-    const previewUrl = URL.createObjectURL(file);
-    setPhotoPreviewUri((prev) => {
-      if (prev && prev !== previewUrl) URL.revokeObjectURL(prev);
-      return previewUrl;
-    });
-    setPhotoAttachment(null);
-    setPhotoProcessing(true);
-
-    const photoId = uuid();
-    pendingPhotoIdRef.current = photoId;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (pendingPhotoIdRef.current !== photoId) return;
-      const dataUrl = String(reader.result || "");
-      setPhotoAttachment({ id: photoId, uri: dataUrl });
-      setPhotoProcessing(false);
-    };
-    reader.onerror = () => {
-      if (pendingPhotoIdRef.current !== photoId) return;
-      setPhotoProcessing(false);
-    };
-    reader.readAsDataURL(file);
-
-    setPhotoModalOpen(true);
-  }
-
-  function handleClosePhotoModal() {
-    setPhotoModalOpen(false);
-    resetPhotoCaptureState();
-  }
-
-  function handleSavePhotoTask(payload: {
-    title: string;
-    phaseId: string;
-    assignedUserId: string;
-    status: TaskStatus;
-    startDate?: string;
-    endDate?: string;
-    workDays?: number;
-    photo: PhotoAttachment;
-  }) {
-    const assignedUserId = payload.assignedUserId || authUserId || "";
-    saveTask({
+  function buildNewTask(overridePhaseId?: string): Task {
+    const phaseId = overridePhaseId || taskDefaults.phaseId || columns[0]?.id || "";
+    const assignedUserId = taskDefaults.assignedUserId || authUserId || "";
+    setTaskDefaults((prev) => ({ ...prev, phaseId, assignedUserId }));
+    return {
       id: "",
-      title: payload.title,
-      columnId: payload.phaseId,
-      phaseId: payload.phaseId,
+      title: "",
+      columnId: phaseId,
+      phaseId,
       assignedUserId,
-      startDate: payload.startDate,
-      endDate: payload.endDate,
-      photo: payload.photo,
-      status: payload.status || "Unassigned",
-      workDays: payload.workDays,
+      startDate: undefined,
+      endDate: undefined,
+      status: "Unassigned",
+      workDays: undefined,
+      photos: [],
+      notes: undefined,
+    };
+  }
+
+  function openCreateTask(overridePhaseId?: string) {
+    setQueuedPhotos([]);
+    setOpenTask(buildNewTask(overridePhaseId));
+  }
+
+  function handleAddTaskPhoto() {
+    openCreateTask();
+    requestImageAttachments({
+      capture: "environment",
+      onComplete: (photos) => {
+        setQueuedPhotos(photos);
+      },
     });
+  }
+
+  function handleAddTaskForPhase(phaseId: string) {
+    openCreateTask(phaseId);
   }
 
   function handleReportSelect(value: string) {
@@ -1800,7 +1871,7 @@ export default function App() {
   return (
     <div className="min-h-screen w-full max-w-[100vw] bg-white overflow-x-hidden">
       <CameraTaskButton
-        onRequestPhoto={requestCamera}
+        onRequestPhoto={handleAddTaskPhoto}
         disabled={false}
       />
       <div
@@ -2269,6 +2340,16 @@ export default function App() {
                                   size="sm"
                                   variant="ghost"
                                   className="h-8 w-8 p-0"
+                                  onClick={() => handleAddTaskForPhase(c.id)}
+                                  title="Add Task"
+                                  aria-label="Add Task"
+                                >
+                                  <Plus className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0"
                                   onClick={() => togglePhaseCollapsed(c.id)}
                                   title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
                                   aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
@@ -2288,7 +2369,10 @@ export default function App() {
                                       <TaskCard
                                         key={t.id}
                                         task={t}
-                                        onEdit={(tk) => setOpenTask(tk)}
+                                        onEdit={(tk) => {
+                                          setQueuedPhotos([]);
+                                          setOpenTask(tk);
+                                        }}
                                         onDelete={(id) => deleteTask(id)}
                                         onRename={saveTask}
                                         onViewPhoto={(photo) => setPhotoViewer(photo)}
@@ -2327,23 +2411,6 @@ export default function App() {
       {showOwner && <OwnerUpdateReport tasks={tasks} columns={columns} onClose={() => setShowOwner(false)} />}
       {showSummary && <TaskSummaryChart tasks={tasks} columns={columns} onClose={() => setShowSummary(false)} />}
 
-      <PhotoTaskModal
-        open={photoModalOpen}
-        photoPreviewUri={photoPreviewUri}
-        photo={photoAttachment}
-        photoProcessing={photoProcessing}
-        phases={columns}
-        users={users}
-        usersLoading={usersLoading}
-        defaultPhaseId={photoDefaults.phaseId}
-        defaultAssignedUserId={photoDefaults.assignedUserId}
-        statusOptions={MANUAL_STATUS_OPTIONS}
-        onClose={handleClosePhotoModal}
-        onSave={handleSavePhotoTask}
-        onRequestPhoto={requestCamera}
-        onPhaseChange={(value) => setPhotoDefaults((prev) => ({ ...prev, phaseId: value }))}
-        onAssignedChange={(value) => setPhotoDefaults((prev) => ({ ...prev, assignedUserId: value }))}
-      />
       <TaskPhotoViewer
         open={!!photoViewer}
         photo={photoViewer}
@@ -2353,10 +2420,19 @@ export default function App() {
       <TaskEditor
         openTask={openTask}
         onSave={saveTask}
-        onClose={() => setOpenTask(null)}
+        onClose={() => {
+          setQueuedPhotos([]);
+          setOpenTask(null);
+        }}
         columns={columns}
         users={users}
         usersLoading={usersLoading}
+        incomingPhotos={queuedPhotos}
+        onConsumeIncomingPhotos={() => setQueuedPhotos([])}
+        onRequestCamera={(onPhotos) => requestImageAttachments({ capture: "environment", onComplete: onPhotos })}
+        onRequestFiles={(onPhotos) => requestImageAttachments({ onComplete: onPhotos })}
+        onPhaseChange={(value) => setTaskDefaults((prev) => ({ ...prev, phaseId: value }))}
+        onAssignedChange={(value) => setTaskDefaults((prev) => ({ ...prev, assignedUserId: value }))}
       />
       {openColumn !== undefined && (
         <ColumnEditor
