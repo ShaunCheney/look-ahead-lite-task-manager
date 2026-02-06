@@ -11,6 +11,11 @@ export type TaskStatus =
   | "Week After"
   | "Closed";
 
+export interface PhotoAttachment {
+  id: string;
+  uri: string;
+}
+
 export interface Column {
   id: string;
   name: string;
@@ -20,10 +25,52 @@ export interface Column {
 export interface Task {
   id: string;
   title: string;
+  phaseId: string;
+  assignedUserId: string;
+  startDate?: string;
+  endDate?: string;
+  photo?: PhotoAttachment;
   notes?: string;
   columnId: string;
   status: TaskStatus;
   workDays?: number;
+}
+
+type TaskMeta = {
+  phaseId?: string;
+  assignedUserId?: string;
+  startDate?: string;
+  endDate?: string;
+  photo?: PhotoAttachment;
+};
+
+const PHOTO_META_START = "<photo-task-meta>";
+const PHOTO_META_END = "</photo-task-meta>";
+
+function parseTaskMeta(notes?: string | null): { meta?: TaskMeta; text?: string } {
+  if (!notes) return {};
+  const startIdx = notes.indexOf(PHOTO_META_START);
+  if (startIdx === -1) return { text: notes };
+  const endIdx = notes.indexOf(PHOTO_META_END, startIdx + PHOTO_META_START.length);
+  if (endIdx === -1) return { text: notes };
+
+  const raw = notes.slice(startIdx + PHOTO_META_START.length, endIdx);
+  let meta: TaskMeta | undefined;
+  try {
+    meta = JSON.parse(raw);
+  } catch {
+    meta = undefined;
+  }
+  const text = notes.slice(0, startIdx).trimEnd();
+  return { meta, text: text || undefined };
+}
+
+export function buildTaskNotes(existingNotes: string | undefined, meta: TaskMeta): string | null {
+  const parsed = parseTaskMeta(existingNotes);
+  const text = parsed.text ?? (existingNotes ? existingNotes.trimEnd() : undefined);
+  const payload = JSON.stringify(meta);
+  const prefix = text ? `${text}\n\n` : "";
+  return `${prefix}${PHOTO_META_START}${payload}${PHOTO_META_END}`;
 }
 
 export async function loadBoardFromSupabase(projectId: string, authUserId?: string) {
@@ -46,14 +93,25 @@ export async function loadBoardFromSupabase(projectId: string, authUserId?: stri
   if (taskErr) throw taskErr;
 
   const cols: Column[] = (colRows || []).map((r: any) => ({ id: r.id, name: r.name }));
-  const tks: Task[] = (taskRows || []).map((r: any) => ({
-    id: r.id,
-    title: r.title,
-    notes: r.notes || undefined,
-    status: (r.status as TaskStatus) || "Unassigned",
-    workDays: typeof r.work_days === "number" ? r.work_days : undefined,
-    columnId: r.column_id,
-  }));
+  const tks: Task[] = (taskRows || []).map((r: any) => {
+    const parsed = parseTaskMeta(r.notes || undefined);
+    const meta = parsed.meta;
+    const columnId = r.column_id as string;
+    const phaseId = meta?.phaseId || columnId;
+    return {
+      id: r.id,
+      title: r.title,
+      notes: r.notes || undefined,
+      status: (r.status as TaskStatus) || "Unassigned",
+      workDays: typeof r.work_days === "number" ? r.work_days : undefined,
+      columnId,
+      phaseId,
+      assignedUserId: meta?.assignedUserId || authUserId || "",
+      startDate: meta?.startDate,
+      endDate: meta?.endDate,
+      photo: meta?.photo,
+    };
+  });
 
   return { columns: cols, tasks: tks };
 }
@@ -91,17 +149,26 @@ export async function saveBoardToSupabase(nextCols: Column[], nextTasks: Task[],
   if (colUpsertErr) throw colUpsertErr;
 
   const orderMap = computeTaskSortOrders(nextCols, nextTasks);
-  const taskPayload = nextTasks.map((t) => ({
-    id: t.id,
-    user_id: authUserId,
-    project_id: currentProjectId,
-    column_id: t.columnId,
-    title: t.title,
-    notes: t.notes || null,
-    status: t.status,
-    work_days: typeof t.workDays === "number" ? t.workDays : null,
-    sort_order: orderMap[t.id] ?? 0,
-  }));
+  const taskPayload = nextTasks.map((t) => {
+    const meta: TaskMeta = {
+      phaseId: t.phaseId || t.columnId,
+      assignedUserId: t.assignedUserId,
+      startDate: t.startDate,
+      endDate: t.endDate,
+      photo: t.photo,
+    };
+    return {
+      id: t.id,
+      user_id: authUserId,
+      project_id: currentProjectId,
+      column_id: t.columnId,
+      title: t.title,
+      notes: buildTaskNotes(t.notes, meta),
+      status: t.status,
+      work_days: typeof t.workDays === "number" ? t.workDays : null,
+      sort_order: orderMap[t.id] ?? 0,
+    };
+  });
 
   const { error: taskUpsertErr } = await supabase
     .from("tasks")

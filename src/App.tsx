@@ -13,12 +13,14 @@ import { KeyboardSensor } from "@dnd-kit/core";
 import { CSS } from "@dnd-kit/utilities";
 
 import { useBoard } from "./hooks/useBoard";
-import { computeTaskSortOrders, seedDefaultColumnsInSupabase as seedCols } from "./board/boardService";
+import { buildTaskNotes, computeTaskSortOrders, seedDefaultColumnsInSupabase as seedCols, type PhotoAttachment, type Task, type TaskStatus } from "./board/boardService";
+import { CameraTaskButton, PhotoTaskModal, TaskPhotoViewer, type UserOption } from "./components/photo-task";
 
 import {
   GripVertical,
   Plus,
   Pencil,
+  Camera,
   Columns,
   Download,
   Upload,
@@ -44,24 +46,6 @@ interface Column {
   id: string;
   name: string;
   linkAfterId?: string;
-}
-
-export type TaskStatus =
-  | "Unassigned"
-  | "Completed"
-  | "In Process"
-  | "Delayed/Overdue"
-  | "This week"
-  | "Next week"
-  | "Week After"
-  | "Closed";
-
-interface Task {
-  id: string;
-  title: string;
-  columnId: string;
-  status: TaskStatus;
-  workDays?: number;
 }
 
 interface ProjectRow {
@@ -195,11 +179,13 @@ function SortableTask({
   onEdit,
   onDelete,
   onRename,
+  onViewPhoto,
 }: {
   task: Task;
   onEdit: (t: Task) => void;
   onDelete: (id: string) => void;
   onRename: (t: Task) => void;
+  onViewPhoto?: (photo: PhotoAttachment, task: Task) => void;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition } = useSortable({ id: task.id });
   const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition };
@@ -249,6 +235,17 @@ function SortableTask({
               </div>
             </div>
             <div className="flex gap-1 flex-shrink-0">
+              {task.photo && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 text-xs"
+                  onClick={() => onViewPhoto?.(task.photo, task)}
+                  title="View photo"
+                >
+                  <Camera className="h-3 w-3" />
+                </Button>
+              )}
               <Button variant="ghost" size="sm" className="h-6 px-1.5 text-xs" onClick={() => onEdit(task)}>
                 <Pencil className="h-3 w-3" />
               </Button>
@@ -949,6 +946,21 @@ export default function App() {
   const [showSummary, setShowSummary] = useState(false);
   const [collapsedPhaseIds, setCollapsedPhaseIds] = useState<Set<string>>(() => new Set());
 
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const pendingPhotoIdRef = useRef<string | null>(null);
+  const [photoModalOpen, setPhotoModalOpen] = useState(false);
+  const [photoPreviewUri, setPhotoPreviewUri] = useState<string | null>(null);
+  const [photoAttachment, setPhotoAttachment] = useState<PhotoAttachment | null>(null);
+  const [photoProcessing, setPhotoProcessing] = useState(false);
+  const [photoViewer, setPhotoViewer] = useState<PhotoAttachment | null>(null);
+
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [photoDefaults, setPhotoDefaults] = useState<{ phaseId: string; assignedUserId: string }>({
+    phaseId: "",
+    assignedUserId: "",
+  });
+
 
   // mobile: hamburger menu open
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -1021,6 +1033,71 @@ export default function App() {
       if (cleanup) cleanup();
     };
   }, []);
+
+  useEffect(() => {
+    if (!photoDefaults.phaseId && columns.length) {
+      setPhotoDefaults((prev) => ({ ...prev, phaseId: columns[0].id }));
+      return;
+    }
+    if (photoDefaults.phaseId && columns.length && !columns.some((c) => c.id === photoDefaults.phaseId)) {
+      setPhotoDefaults((prev) => ({ ...prev, phaseId: columns[0].id }));
+    }
+  }, [columns, photoDefaults.phaseId]);
+
+  useEffect(() => {
+    if (authUserId && !photoDefaults.assignedUserId) {
+      setPhotoDefaults((prev) => ({ ...prev, assignedUserId: authUserId }));
+    }
+  }, [authUserId, photoDefaults.assignedUserId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadUsers() {
+      if (!authUserId) {
+        if (!cancelled) {
+          setUsers([]);
+          setUsersLoading(false);
+        }
+        return;
+      }
+      setUsersLoading(true);
+
+      try {
+        const me: UserOption = { id: authUserId, label: authEmail || "You" };
+        if (!cancelled) setUsers([me]);
+
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("id,full_name,email")
+          .order("full_name", { ascending: true });
+
+        if (error) throw error;
+
+        const options: UserOption[] = (data || []).map((u: any) => ({
+          id: u.id,
+          label: u.full_name || u.email || u.id.slice(0, 8),
+        }));
+
+        const unique = new Map<string, UserOption>();
+        for (const opt of [me, ...options]) unique.set(opt.id, opt);
+
+        if (!cancelled) setUsers(Array.from(unique.values()));
+      } catch (e) {
+        console.warn("Falling back to current user list:", e);
+        if (!cancelled) {
+          setUsers([{ id: authUserId, label: authEmail || "You" }]);
+        }
+      } finally {
+        if (!cancelled) setUsersLoading(false);
+      }
+    }
+
+    loadUsers();
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, authEmail]);
 
   // ================= Load projects from Supabase =================
   useEffect(() => {
@@ -1194,6 +1271,13 @@ export default function App() {
       project_id: inserted.id,
       column_id: colMap.get(t.columnId) || t.columnId,
       title: t.title,
+      notes: buildTaskNotes(t.notes, {
+        phaseId: t.phaseId || t.columnId,
+        assignedUserId: t.assignedUserId,
+        startDate: t.startDate,
+        endDate: t.endDate,
+        photo: t.photo,
+      }),
       status: t.status,
       work_days: typeof t.workDays === "number" ? t.workDays : null,
       sort_order: perColOrder[t.id] ?? 0,
@@ -1316,6 +1400,11 @@ export default function App() {
               id: uuid(),
               title,
               columnId: column.id,
+              phaseId: column.id,
+              assignedUserId: authUserId || "",
+              startDate: undefined,
+              endDate: undefined,
+              photo: undefined,
               status,
               workDays: daysNum,
             });
@@ -1340,6 +1429,72 @@ export default function App() {
     input.click();
   }
 
+  function triggerCamera() {
+    cameraInputRef.current?.click();
+  }
+
+  function handleCameraCapture(file: File) {
+    const previewUrl = URL.createObjectURL(file);
+    setPhotoPreviewUri((prev) => {
+      if (prev && prev !== previewUrl) URL.revokeObjectURL(prev);
+      return previewUrl;
+    });
+    setPhotoAttachment(null);
+    setPhotoProcessing(true);
+
+    const photoId = uuid();
+    pendingPhotoIdRef.current = photoId;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (pendingPhotoIdRef.current !== photoId) return;
+      const dataUrl = String(reader.result || "");
+      setPhotoAttachment({ id: photoId, uri: dataUrl });
+      setPhotoProcessing(false);
+    };
+    reader.onerror = () => {
+      if (pendingPhotoIdRef.current !== photoId) return;
+      setPhotoProcessing(false);
+    };
+    reader.readAsDataURL(file);
+
+    setPhotoModalOpen(true);
+  }
+
+  function handleClosePhotoModal() {
+    setPhotoModalOpen(false);
+    setPhotoAttachment(null);
+    setPhotoProcessing(false);
+    pendingPhotoIdRef.current = null;
+    setPhotoPreviewUri((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }
+
+  function handleSavePhotoTask(payload: {
+    title: string;
+    phaseId: string;
+    assignedUserId: string;
+    startDate?: string;
+    endDate?: string;
+    photo: PhotoAttachment;
+  }) {
+    const assignedUserId = payload.assignedUserId || authUserId || "";
+    saveTask({
+      id: "",
+      title: payload.title,
+      columnId: payload.phaseId,
+      phaseId: payload.phaseId,
+      assignedUserId,
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      photo: payload.photo,
+      status: "Unassigned",
+      workDays: undefined,
+    });
+  }
+
   function handleReportSelect(value: string) {
     if (value === "threeWeek") setShowReport(true);
     else if (value === "ownerUpdate") setShowOwner(true);
@@ -1348,8 +1503,19 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full max-w-[100vw] bg-white overflow-x-hidden">
-      <div className="w-full max-w-[100vw] mx-auto px-3 sm:px-6 py-4 space-y-4 overflow-x-hidden">
-        <header className="sticky top-0 z-20 bg-white pb-3 overflow-x-hidden">
+      <CameraTaskButton
+        onCapture={handleCameraCapture}
+        inputRef={cameraInputRef}
+        disabled={false}
+      />
+      <div
+        className="w-full max-w-[100vw] mx-auto px-3 sm:px-6 pb-4 space-y-4 overflow-x-hidden"
+        style={{ paddingTop: "calc(env(safe-area-inset-top) + 72px)" }}
+      >
+        <header
+          className="sticky top-0 z-20 bg-white pb-3 overflow-x-hidden"
+          style={{ top: "calc(env(safe-area-inset-top) + 72px)" }}
+        >
           <div className="flex flex-wrap items-start gap-3 max-w-[100vw] min-w-0">
             <div className="flex flex-col gap-2 w-full max-w-[100vw] min-w-0">
               <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
@@ -1825,7 +1991,18 @@ export default function App() {
                                     size="sm"
                                     variant="ghost"
                                     className="h-8 w-8 p-0"
-                                    onClick={() => setOpenTask({ id: "", title: "", columnId: c.id, status: "Unassigned", workDays: undefined })}
+                                    onClick={() => setOpenTask({
+                                      id: "",
+                                      title: "",
+                                      columnId: c.id,
+                                      phaseId: c.id,
+                                      assignedUserId: authUserId || "",
+                                      startDate: undefined,
+                                      endDate: undefined,
+                                      photo: undefined,
+                                      status: "Unassigned",
+                                      workDays: undefined,
+                                    })}
                                     title="Add Task"
                                   >
                                     <Plus className="h-4 w-4" />
@@ -1846,13 +2023,25 @@ export default function App() {
                                             onEdit={(tk) => setOpenTask(tk)}
                                             onDelete={(id) => deleteTask(id)}
                                             onRename={saveTask}
+                                            onViewPhoto={(photo) => setPhotoViewer(photo)}
                                           />
                                         ))}
                                       </SortableContext>
                                       <QuickAddTask
                                         columnId={c.id}
                                         onCreate={(columnId, title) =>
-                                          saveTask({ id: "", title, columnId, status: "Unassigned", workDays: undefined })
+                                          saveTask({
+                                            id: "",
+                                            title,
+                                            columnId,
+                                            phaseId: columnId,
+                                            assignedUserId: authUserId || "",
+                                            startDate: undefined,
+                                            endDate: undefined,
+                                            photo: undefined,
+                                            status: "Unassigned",
+                                            workDays: undefined,
+                                          })
                                         }
                                       />
                                     </div>
@@ -1886,6 +2075,28 @@ export default function App() {
       {showReport && <ThreeWeekReport tasks={tasks} columns={columns} onClose={() => setShowReport(false)} />}
       {showOwner && <OwnerUpdateReport tasks={tasks} columns={columns} onClose={() => setShowOwner(false)} />}
       {showSummary && <TaskSummaryChart tasks={tasks} columns={columns} onClose={() => setShowSummary(false)} />}
+
+      <PhotoTaskModal
+        open={photoModalOpen}
+        photoPreviewUri={photoPreviewUri}
+        photo={photoAttachment}
+        photoProcessing={photoProcessing}
+        phases={columns}
+        users={users}
+        usersLoading={usersLoading}
+        defaultPhaseId={photoDefaults.phaseId}
+        defaultAssignedUserId={photoDefaults.assignedUserId}
+        onClose={handleClosePhotoModal}
+        onSave={handleSavePhotoTask}
+        onRequestPhoto={triggerCamera}
+        onPhaseChange={(value) => setPhotoDefaults((prev) => ({ ...prev, phaseId: value }))}
+        onAssignedChange={(value) => setPhotoDefaults((prev) => ({ ...prev, assignedUserId: value }))}
+      />
+      <TaskPhotoViewer
+        open={!!photoViewer}
+        photo={photoViewer}
+        onClose={() => setPhotoViewer(null)}
+      />
 
       <TaskEditor openTask={openTask} onSave={saveTask} onClose={() => setOpenTask(null)} />
       {openColumn !== undefined && (

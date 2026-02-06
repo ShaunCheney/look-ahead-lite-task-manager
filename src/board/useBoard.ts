@@ -63,12 +63,25 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
     return map;
   }, [data.columns, data.tasks]);
 
+  function normalizeTask(draft: svc.Task): svc.Task {
+    const columnId = draft.columnId || draft.phaseId;
+    const phaseId = draft.phaseId || draft.columnId;
+    return {
+      ...draft,
+      columnId,
+      phaseId,
+      assignedUserId: draft.assignedUserId || authUserId || "",
+      status: draft.status || "Unassigned",
+    };
+  }
+
   function saveTask(draft: svc.Task) {
+    const normalized = normalizeTask(draft);
     const next = (() => {
-      if (draft.id) {
-        return { columns: data.columns, tasks: data.tasks.map((t) => (t.id === draft.id ? { ...draft } : t)) };
+      if (normalized.id) {
+        return { columns: data.columns, tasks: data.tasks.map((t) => (t.id === normalized.id ? { ...normalized } : t)) };
       }
-      return { columns: data.columns, tasks: [...data.tasks, { ...draft, id: uuid() }] };
+      return { columns: data.columns, tasks: [...data.tasks, { ...normalized, id: uuid() }] };
     })();
 
     setBoard(next);
@@ -114,7 +127,12 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
     const overColumn = data.columns.find((c) => c.id === over.id);
     const destColumnId = overTask ? overTask.columnId : overColumn?.id;
     if (destColumnId && destColumnId !== activeTask.columnId) {
-      const next = { columns: data.columns, tasks: data.tasks.map((t) => (t.id === activeTask.id ? { ...t, columnId: destColumnId } : t)) };
+      const next = {
+        columns: data.columns,
+        tasks: data.tasks.map((t) =>
+          t.id === activeTask.id ? { ...t, columnId: destColumnId, phaseId: destColumnId } : t
+        ),
+      };
       setBoard(next);
       scheduleSaveBoard(next.columns, next.tasks);
     }
@@ -168,7 +186,9 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
       newDestIds = [...destIds.slice(0, destIndex), active.id, ...destIds.slice(destIndex)];
     }
 
-    const moved = data.tasks.map((t) => (t.id === active.id ? { ...t, columnId: destColumnId } : t));
+    const moved = data.tasks.map((t) =>
+      t.id === active.id ? { ...t, columnId: destColumnId, phaseId: destColumnId } : t
+    );
     const withOrder = moved.map((t) =>
       t.columnId === destColumnId
         ? ({ ...(t as any), __ord: newDestIds.indexOf(t.id) } as any)
