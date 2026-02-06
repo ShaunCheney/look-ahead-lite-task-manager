@@ -1807,8 +1807,7 @@ export default function App() {
         style={{ paddingTop: "calc(env(safe-area-inset-top) + 60px)" }}
       >
         <header
-          className="sticky top-0 z-30 bg-white pb-3 overflow-x-hidden"
-          style={{ top: "calc(env(safe-area-inset-top) + 60px)" }}
+          className="relative z-10 bg-white pb-3 overflow-x-hidden"
         >
           <div className="flex flex-wrap items-start gap-3 max-w-[100vw] min-w-0">
             <div className="flex flex-col gap-2 w-full max-w-[100vw] min-w-0">
@@ -2236,7 +2235,7 @@ export default function App() {
             strategy={verticalListSortingStrategy}
           >
             <div className="w-full border rounded-2xl bg-white p-4 pt-5 sm:p-6 sm:pt-6">
-              <div className="flex flex-col gap-2 w-full">
+              <div className="flex flex-col gap-4 w-full">
                 {columns.length === 0 ? (
                   <div className="text-sm opacity-60">No phases yet.</div>
                 ) : (
@@ -2246,47 +2245,44 @@ export default function App() {
                       <div key={c.id} className="w-full">
                         <SortableColumn column={c}>
                           {({ setActivatorNodeRef, attributes, listeners }) => (
-                            <div className="bg-transparent rounded-none shadow-none p-0 border-b border-neutral-200">
-                              {/* Phase Header as Section Title */}
-                              <div className="mb-3 pb-2 border-b-2 border-neutral-300">
-                                <div className="flex items-center gap-2">
-                                  <div
-                                    ref={setActivatorNodeRef}
-                                    {...attributes}
-                                    {...listeners}
-                                    className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/60 flex-shrink-0"
-                                    aria-label="Move Phase"
-                                    title="Move Phase"
-                                  >
-                                    <GripVertical className="h-3 w-3" />
-                                  </div>
-                                  <div
-                                    className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
-                                    onClick={() => setOpenColumn(c)}
-                                  >
-                                    {c.name}
-                                  </div>
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="h-8 w-8 p-0"
-                                    onClick={() => togglePhaseCollapsed(c.id)}
-                                    title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                                    aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                                  >
-                                    {isPhaseCollapsed(c.id) ? (
-                                      <ChevronRight className="h-4 w-4" />
-                                    ) : (
-                                      <ChevronDown className="h-4 w-4" />
-                                    )}
-                                  </Button>
+                            <div className="rounded-2xl border border-neutral-200 bg-neutral-50/70 p-3 sm:p-4 shadow-sm">
+                              {/* Phase Header */}
+                              <div className="flex items-center gap-2">
+                                <div
+                                  ref={setActivatorNodeRef}
+                                  {...attributes}
+                                  {...listeners}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/70 flex-shrink-0"
+                                  aria-label="Move Phase"
+                                  title="Move Phase"
+                                >
+                                  <GripVertical className="h-3 w-3" />
                                 </div>
+                                <div
+                                  className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
+                                  onClick={() => setOpenColumn(c)}
+                                >
+                                  {c.name}
+                                </div>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0"
+                                  onClick={() => togglePhaseCollapsed(c.id)}
+                                  title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                  aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                >
+                                  {isPhaseCollapsed(c.id) ? (
+                                    <ChevronRight className="h-4 w-4" />
+                                  ) : (
+                                    <ChevronDown className="h-4 w-4" />
+                                  )}
+                                </Button>
                               </div>
 
                               {!isPhaseCollapsed(c.id) && (
                                 <>
-                                  {/* Tasks Container - Indented */}
-                                  <div className="w-full pl-6 space-y-2 mb-4">
+                                  <div className="mt-3 space-y-2">
                                     {items.map((t) => (
                                       <TaskCard
                                         key={t.id}
@@ -2301,7 +2297,7 @@ export default function App() {
                                     ))}
                                   </div>
 
-                                  <div className="flex justify-end mb-4">
+                                  <div className="flex justify-end mt-3">
                                     <Button
                                       variant="secondary"
                                       size="sm"
