@@ -37,6 +37,8 @@ export interface Task {
   columnId: string;
   status: TaskStatus;
   workDays?: number;
+  percentComplete?: number;
+  statusOverride?: TaskStatus;
 }
 
 type TaskMeta = {
@@ -46,6 +48,8 @@ type TaskMeta = {
   endDate?: string;
   photos?: PhotoAttachment[];
   photo?: PhotoAttachment;
+  percentComplete?: number;
+  statusOverride?: TaskStatus;
 };
 
 const PHOTO_META_START = "<photo-task-meta>";
@@ -102,6 +106,10 @@ export async function loadBoardFromSupabase(projectId: string, authUserId?: stri
     const meta = parsed.meta;
     const columnId = r.column_id as string;
     const phaseId = meta?.phaseId || columnId;
+    const percentComplete =
+      typeof meta?.percentComplete === "number" && Number.isFinite(meta.percentComplete)
+        ? meta.percentComplete
+        : 0;
     const metaPhotos = Array.isArray(meta?.photos)
       ? meta?.photos
       : meta?.photo
@@ -119,6 +127,8 @@ export async function loadBoardFromSupabase(projectId: string, authUserId?: stri
       startDate: meta?.startDate,
       endDate: meta?.endDate,
       photos: metaPhotos && metaPhotos.length ? metaPhotos : undefined,
+      percentComplete,
+      statusOverride: meta?.statusOverride,
     };
   });
 
@@ -165,6 +175,8 @@ export async function saveBoardToSupabase(nextCols: Column[], nextTasks: Task[],
       startDate: t.startDate,
       endDate: t.endDate,
       photos: t.photos && t.photos.length ? t.photos : undefined,
+      percentComplete: typeof t.percentComplete === "number" ? t.percentComplete : undefined,
+      statusOverride: t.statusOverride,
     };
     return {
       id: t.id,

@@ -50,6 +50,17 @@ body {
   min-width: 0;
 }
 
+/* iPhone-only task date field sizing */
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 767px) {
+    .task-date-grid input[type="date"] {
+      min-width: 0;
+      width: 100%;
+      max-width: 100%;
+    }
+  }
+}
+
 /* Images/SVG/canvas never exceed viewport */
 img,
 svg,

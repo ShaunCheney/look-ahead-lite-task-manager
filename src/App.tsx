@@ -80,10 +80,11 @@ const STATUS_OPTIONS: TaskStatus[] = [
 const MANUAL_STATUS_OPTIONS: TaskStatus[] = [
   "Unassigned",
   "In Process",
-  "Future Work",
   "Completed",
   "Closed",
 ];
+
+const STATUS_AUTO_VALUE = "__auto__";
 
 const SORT_STATUS_ORDER: TaskStatus[] = [
   "Unassigned",
@@ -282,6 +283,7 @@ function getDerivedStatus(task: Task, today = new Date()): TaskStatus | null {
 }
 
 function getDisplayStatus(task: Task, today = new Date()): TaskStatus {
+  if (task.statusOverride && task.statusOverride !== "Future Work") return task.statusOverride;
   if (task.status === "Completed" || task.status === "Closed") return task.status;
   const derived = getDerivedStatus(task, today);
   return derived ?? task.status;
@@ -386,6 +388,12 @@ const TaskCard = memo(function TaskCard({
   const assignedDisplay = assignedLabel
     ? (assignedLabel.length <= 8 ? assignedLabel : (assignedInitials || assignedLabel))
     : "";
+  const percentComplete = (() => {
+    if (typeof task.percentComplete !== "number" || Number.isNaN(task.percentComplete) || !Number.isFinite(task.percentComplete)) {
+      return 0;
+    }
+    return Math.max(0, Math.min(100, Math.round(task.percentComplete)));
+  })();
 
   useEffect(() => {
     if (!isEditingTitle) setTitleDraft(task.title);
@@ -441,6 +449,9 @@ const TaskCard = memo(function TaskCard({
                   <Camera className="h-3 w-3" />
                 </Button>
               )}
+              <span className="text-[10px] font-semibold tabular-nums text-neutral-600 self-center">
+                {percentComplete}%
+              </span>
               <Button variant="ghost" className="h-11 w-11 p-0 rounded-full sm:h-8 sm:w-8" onClick={() => onEdit(task)}>
                 <Pencil className="h-4 w-4" />
               </Button>
@@ -658,13 +669,19 @@ function TaskEditor({
   if (!draft) return null;
 
   const derivedStatus = getDerivedStatus(draft);
-  const shouldOverrideStatus = !!derivedStatus && draft.status !== "Completed" && draft.status !== "Closed";
-  const manualStatusValue = !shouldOverrideStatus && MANUAL_STATUS_OPTIONS.includes(draft.status) ? draft.status : "";
-  const statusPlaceholder = shouldOverrideStatus
-    ? `${derivedStatus} (auto)`
-    : manualStatusValue
-      ? "Select status"
-      : "Derived from dates";
+  const hasDerivedStatus = !!derivedStatus;
+  const hasStatusOverride = !!draft.statusOverride;
+  const showAutoOption = hasDerivedStatus || hasStatusOverride;
+  const manualStatusValue = MANUAL_STATUS_OPTIONS.includes(draft.status) ? draft.status : "";
+  const statusSelectValue = hasStatusOverride
+    ? draft.statusOverride!
+    : hasDerivedStatus
+      ? STATUS_AUTO_VALUE
+      : manualStatusValue;
+  const statusPlaceholder = manualStatusValue
+    ? "Select status"
+    : "Derived from dates";
+  const autoStatusLabel = derivedStatus ? `${derivedStatus} (auto)` : "Auto";
   const phaseOptions = columns;
   const selectedPhaseId = draft.phaseId || draft.columnId || phaseOptions[0]?.id || "";
   const userOptions = users;
@@ -793,13 +810,28 @@ function TaskEditor({
           <div>
             <label className="text-xs font-medium">Status</label>
             <Select
-              value={manualStatusValue}
-              onValueChange={(v) => setDraft({ ...draft, status: v as TaskStatus })}
+              value={statusSelectValue}
+              onValueChange={(v) => {
+                if (v === STATUS_AUTO_VALUE) {
+                  setDraft({ ...draft, statusOverride: undefined });
+                  return;
+                }
+                if (hasDerivedStatus || hasStatusOverride) {
+                  setDraft({ ...draft, statusOverride: v as TaskStatus });
+                  return;
+                }
+                setDraft({ ...draft, status: v as TaskStatus });
+              }}
             >
               <SelectTrigger className="w-full bg-white">
                 <SelectValue placeholder={statusPlaceholder} />
               </SelectTrigger>
               <SelectContent className="bg-white">
+                {showAutoOption && (
+                  <SelectItem value={STATUS_AUTO_VALUE}>
+                    {autoStatusLabel}
+                  </SelectItem>
+                )}
                 {MANUAL_STATUS_OPTIONS.map((s) => (
                   <SelectItem key={s} value={s}>
                     {s}
@@ -807,10 +839,16 @@ function TaskEditor({
                 ))}
               </SelectContent>
             </Select>
-            {shouldOverrideStatus ? (
-              <div className="text-xs text-neutral-500 mt-1">
-                Date-based status: {derivedStatus}.
-              </div>
+            {hasDerivedStatus || hasStatusOverride ? (
+              draft.statusOverride ? (
+                <div className="text-xs text-neutral-500 mt-1">
+                  Manual override enabled.
+                </div>
+              ) : (
+                <div className="text-xs text-neutral-500 mt-1">
+                  Date-based status: {derivedStatus}.
+                </div>
+              )
             ) : !manualStatusValue ? (
               <div className="text-xs text-neutral-500 mt-1">
                 Date-based status is derived from dates.
@@ -819,8 +857,28 @@ function TaskEditor({
           </div>
 
           <div>
+            <label className="text-xs font-medium">Percent Complete</label>
+            <div className="mt-1">
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={typeof draft.percentComplete === "number" ? String(draft.percentComplete) : ""}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  const n = v === "" ? undefined : Math.max(0, Math.min(100, Math.round(Number(v))));
+                  setDraft({ ...draft, percentComplete: n });
+                }}
+                placeholder="0-100"
+                className="h-10 text-base sm:text-sm bg-white"
+              />
+            </div>
+          </div>
+
+          <div>
             <label className="text-xs font-medium">Dates</label>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-2">
+            <div className="task-date-grid grid grid-cols-2 sm:grid-cols-3 gap-3 mt-2">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-neutral-600">Start Date</label>
                 <Input
@@ -1403,6 +1461,7 @@ export default function App() {
     tasks,
     boardLoading,
     boardError,
+    isInitialBoardLoading,
     setBoard,
     saveTask,
     deleteTask,
@@ -1801,6 +1860,8 @@ export default function App() {
         startDate: t.startDate,
         endDate: t.endDate,
         photos: t.photos,
+        percentComplete: t.percentComplete,
+        statusOverride: t.statusOverride,
       }),
       status: t.status,
       work_days: typeof t.workDays === "number" ? t.workDays : null,
@@ -2012,6 +2073,8 @@ export default function App() {
       endDate: undefined,
       status: "Unassigned",
       workDays: undefined,
+      percentComplete: 0,
+      statusOverride: undefined,
       photos: [],
       notes: undefined,
     };
@@ -2481,114 +2544,118 @@ export default function App() {
           </div>
         </header>
 
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragEnd={handlePhaseDragEnd}
-        >
-          <SortableContext
-            items={columns.map((c) => `col:${c.id}`)}
-            strategy={verticalListSortingStrategy}
+        {isMobile && isInitialBoardLoading ? (
+          <div className="text-sm opacity-60">Loading board…</div>
+        ) : (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handlePhaseDragEnd}
           >
-            <div className="flex flex-col gap-4 w-full">
-              {columns.length === 0 ? (
-                <div className="text-sm opacity-60">No phases yet.</div>
-              ) : (
-                columns.map((c) => {
-                  const items = tasksByColumnSorted[c.id] || [];
-                  return (
-                    <div key={c.id} className="w-full">
-                      <SortableColumn column={c}>
-                        {({ setActivatorNodeRef, attributes, listeners }) => (
-                          <div className="rounded-2xl border border-neutral-200 bg-neutral-50/70 p-3 sm:p-4 shadow-sm">
-                            {/* Phase Header */}
-                            <div className="flex items-center gap-2">
-                              <div
-                                ref={setActivatorNodeRef}
-                                {...attributes}
-                                {...listeners}
-                                className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/70 flex-shrink-0"
-                                aria-label="Move Phase"
-                                title="Move Phase"
-                              >
-                                <GripVertical className="h-3 w-3" />
+            <SortableContext
+              items={columns.map((c) => `col:${c.id}`)}
+              strategy={verticalListSortingStrategy}
+            >
+              <div className="flex flex-col gap-4 w-full">
+                {columns.length === 0 ? (
+                  <div className="text-sm opacity-60">No phases yet.</div>
+                ) : (
+                  columns.map((c) => {
+                    const items = tasksByColumnSorted[c.id] || [];
+                    return (
+                      <div key={c.id} className="w-full">
+                        <SortableColumn column={c}>
+                          {({ setActivatorNodeRef, attributes, listeners }) => (
+                            <div className="rounded-2xl border border-neutral-200 bg-neutral-50/70 p-3 sm:p-4 shadow-sm">
+                              {/* Phase Header */}
+                              <div className="flex items-center gap-2">
+                                <div
+                                  ref={setActivatorNodeRef}
+                                  {...attributes}
+                                  {...listeners}
+                                  className="flex items-center gap-1 px-2 py-1 rounded-full border border-dashed border-neutral-300 text-[11px] uppercase tracking-wide text-neutral-500 cursor-grab active:cursor-grabbing select-none bg-white/70 flex-shrink-0"
+                                  aria-label="Move Phase"
+                                  title="Move Phase"
+                                >
+                                  <GripVertical className="h-3 w-3" />
+                                </div>
+                                <div
+                                  className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
+                                  onClick={() => setOpenColumn(c)}
+                                >
+                                  {c.name}
+                                </div>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0"
+                                  onClick={() => handleAddTaskForPhase(c.id)}
+                                  title="Add Task"
+                                  aria-label="Add Task"
+                                >
+                                  <Plus className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  className="h-8 w-8 p-0"
+                                  onClick={() => togglePhaseCollapsed(c.id)}
+                                  title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                  aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
+                                >
+                                  {isPhaseCollapsed(c.id) ? (
+                                    <ChevronRight className="h-4 w-4" />
+                                  ) : (
+                                    <ChevronDown className="h-4 w-4" />
+                                  )}
+                                </Button>
                               </div>
-                              <div
-                                className="text-base font-bold text-neutral-800 hover:underline cursor-pointer flex-1"
-                                onClick={() => setOpenColumn(c)}
-                              >
-                                {c.name}
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-8 w-8 p-0"
-                                onClick={() => handleAddTaskForPhase(c.id)}
-                                title="Add Task"
-                                aria-label="Add Task"
-                              >
-                                <Plus className="h-4 w-4" />
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-8 w-8 p-0"
-                                onClick={() => togglePhaseCollapsed(c.id)}
-                                title={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                                aria-label={isPhaseCollapsed(c.id) ? "Expand Phase" : "Collapse Phase"}
-                              >
-                                {isPhaseCollapsed(c.id) ? (
-                                  <ChevronRight className="h-4 w-4" />
-                                ) : (
-                                  <ChevronDown className="h-4 w-4" />
-                                )}
-                              </Button>
+
+                              {!isPhaseCollapsed(c.id) && (
+                                <>
+                                  <div className="mt-3 space-y-2">
+                                    {items.map((t) => {
+                                      const displayStatus = displayStatusById.get(t.id) ?? t.status;
+                                      const tone = toneByTaskId.get(t.id) ?? DEFAULT_STATUS_TONE;
+                                      return (
+                                        <TaskCard
+                                          key={t.id}
+                                          task={t}
+                                          displayStatus={displayStatus}
+                                          tone={tone}
+                                          onEdit={handleEditTask}
+                                          onDelete={handleDeleteTask}
+                                          onRename={handleRenameTask}
+                                          onViewPhoto={handleViewPhotos}
+                                          assignedLabel={userLabelById.get(t.assignedUserId)}
+                                        />
+                                      );
+                                    })}
+                                  </div>
+
+                                  <div className="flex justify-end mt-3">
+                                    <Button
+                                      variant="secondary"
+                                      size="sm"
+                                      className="text-xs"
+                                      onClick={() => removeColumn(c.id)}
+                                    >
+                                      <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
+                                    </Button>
+                                  </div>
+                                </>
+                              )}
                             </div>
-
-                            {!isPhaseCollapsed(c.id) && (
-                              <>
-                                <div className="mt-3 space-y-2">
-                                  {items.map((t) => {
-                                    const displayStatus = displayStatusById.get(t.id) ?? t.status;
-                                    const tone = toneByTaskId.get(t.id) ?? DEFAULT_STATUS_TONE;
-                                    return (
-                                      <TaskCard
-                                        key={t.id}
-                                        task={t}
-                                        displayStatus={displayStatus}
-                                        tone={tone}
-                                        onEdit={handleEditTask}
-                                        onDelete={handleDeleteTask}
-                                        onRename={handleRenameTask}
-                                        onViewPhoto={handleViewPhotos}
-                                        assignedLabel={userLabelById.get(t.assignedUserId)}
-                                      />
-                                    );
-                                  })}
-                                </div>
-
-                                <div className="flex justify-end mt-3">
-                                  <Button
-                                    variant="secondary"
-                                    size="sm"
-                                    className="text-xs"
-                                    onClick={() => removeColumn(c.id)}
-                                  >
-                                    <Trash2 className="h-3 w-3 mr-1" /> Remove Phase
-                                  </Button>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </SortableColumn>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </SortableContext>
-        </DndContext>
+                          )}
+                        </SortableColumn>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </SortableContext>
+          </DndContext>
+        )}
       </div>
 
       {showReport && <ThreeWeekReport tasks={tasks} columns={columns} onClose={() => setShowReport(false)} />}

@@ -8,8 +8,10 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
   const [data, setData] = useState<{ columns: svc.Column[]; tasks: svc.Task[] }>({ columns: [], tasks: [] });
   const [boardLoading, setBoardLoading] = useState(false);
   const [boardError, setBoardError] = useState<string | null>(null);
+  const [isInitialBoardLoading, setIsInitialBoardLoading] = useState(false);
 
   const saveTimerRef = useRef<number | null>(null);
+  const hasLoadedRef = useRef(false);
 
   function setBoard(next: { columns: svc.Column[]; tasks: svc.Task[] }) {
     setData(next);
@@ -36,13 +38,20 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
 
   useEffect(() => {
     let cancelled = false;
-    async function loadBoard() {
-      setBoardError(null);
-      if (!authUserId || !currentProjectId) {
-        setData({ columns: [], tasks: [] });
-        return;
-      }
 
+    setBoardError(null);
+    if (!authUserId || !currentProjectId) {
+      setData({ columns: [], tasks: [] });
+      setBoardLoading(false);
+      setIsInitialBoardLoading(false);
+      hasLoadedRef.current = false;
+      return;
+    }
+
+    const shouldShowInitialLoading = !hasLoadedRef.current;
+    if (shouldShowInitialLoading) setIsInitialBoardLoading(true);
+
+    async function loadBoard() {
       setBoardLoading(true);
       try {
         const loaded = await svc.loadBoardFromSupabase(currentProjectId, authUserId);
@@ -62,7 +71,11 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
           }
         }
       } finally {
-        if (!cancelled) setBoardLoading(false);
+        if (!cancelled) {
+          setBoardLoading(false);
+          if (shouldShowInitialLoading) setIsInitialBoardLoading(false);
+          hasLoadedRef.current = true;
+        }
       }
     }
 
@@ -79,6 +92,11 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
       phaseId,
       assignedUserId: draft.assignedUserId || authUserId || "",
       status: draft.status || "Unassigned",
+      percentComplete:
+        typeof draft.percentComplete === "number" && Number.isFinite(draft.percentComplete)
+          ? Math.max(0, Math.min(100, Math.round(draft.percentComplete)))
+          : 0,
+      statusOverride: draft.statusOverride,
     };
   }
 
@@ -126,6 +144,7 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
     tasks: data.tasks,
     boardLoading,
     boardError,
+    isInitialBoardLoading,
     setBoard,
     saveTask,
     deleteTask,
