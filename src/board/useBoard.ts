@@ -89,16 +89,23 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
   function normalizeTask(draft: svc.Task): svc.Task {
     const columnId = draft.columnId || draft.phaseId;
     const phaseId = draft.phaseId || draft.columnId;
+    const percentComplete =
+      typeof draft.percentComplete === "number" && Number.isFinite(draft.percentComplete)
+        ? Math.max(0, Math.min(100, Math.round(draft.percentComplete)))
+        : 0;
+    const forcedStatus =
+      percentComplete === 100
+        ? "Completed"
+        : percentComplete > 0 && percentComplete < 100
+          ? "In Process"
+          : undefined;
     return {
       ...draft,
       columnId,
       phaseId,
       assignedUserId: draft.assignedUserId || authUserId || "",
-      status: draft.status || "Unassigned",
-      percentComplete:
-        typeof draft.percentComplete === "number" && Number.isFinite(draft.percentComplete)
-          ? Math.max(0, Math.min(100, Math.round(draft.percentComplete)))
-          : 0,
+      status: forcedStatus ?? (draft?.status || "Unassigned"),
+      percentComplete,
       statusOverride: draft.statusOverride,
     };
   }

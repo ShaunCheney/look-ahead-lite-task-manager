@@ -246,11 +246,54 @@ function startOfWeek(date: Date): Date {
   return start;
 }
 
+function startOfWeekMonday(date: Date): Date {
+  const start = startOfDay(date);
+  const day = start.getDay();
+  const diff = (day + 6) % 7;
+  start.setDate(start.getDate() - diff);
+  return start;
+}
+
 function addDays(date: Date, days: number): Date {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
   return next;
 }
+
+function getPercentForcedStatus(percentComplete?: number): TaskStatus | null {
+  if (typeof percentComplete !== "number" || Number.isNaN(percentComplete) || !Number.isFinite(percentComplete)) {
+    return null;
+  }
+  if (percentComplete === 100) return "Completed";
+  if (percentComplete > 0 && percentComplete < 100) return "In Process";
+  return null;
+}
+
+function formatWeekLabel(date: Date): string {
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  const year = String(date.getFullYear()).slice(-2).padStart(2, "0");
+  return `Week of ${month}/${day}/${year}`;
+}
+
+function getTaskWeekStartDate(task: Task): Date | null {
+  const start = parseIsoDate(task.startDate);
+  if (!start) return null;
+  return startOfWeekMonday(start);
+}
+
+function getTaskWeekLabel(task: Task): string | null {
+  const weekStart = getTaskWeekStartDate(task);
+  return weekStart ? formatWeekLabel(weekStart) : null;
+}
+
+function getStatusLabel(task: Task, status: TaskStatus): string {
+  if (status === "This week" || status === "Next week" || status === "Week After") {
+    return getTaskWeekLabel(task) ?? status;
+  }
+  return status;
+}
+
 
 function getTaskStatusDate(task: Task): Date | null {
   const date = task.endDate || task.startDate;
@@ -283,6 +326,8 @@ function getDerivedStatus(task: Task, today = new Date()): TaskStatus | null {
 }
 
 function getDisplayStatus(task: Task, today = new Date()): TaskStatus {
+  const percentForced = getPercentForcedStatus(task.percentComplete);
+  if (percentForced) return percentForced;
   if (task.statusOverride && task.statusOverride !== "Future Work") return task.statusOverride;
   if (task.status === "Completed" || task.status === "Closed") return task.status;
   const derived = getDerivedStatus(task, today);
@@ -419,7 +464,7 @@ const TaskCard = memo(function TaskCard({
           <div className="flex justify-between items-start gap-2 mb-1">
             <div className="flex flex-wrap items-center gap-1 min-w-0">
               <Badge className={`rounded-full text-[9px] px-1.5 py-0.5 border pointer-events-none ${tone.chip}`}>
-                {displayStatus}
+                {getStatusLabel(task, displayStatus)}
               </Badge>
               {assignedDisplay && (
                 <Badge
@@ -671,13 +716,17 @@ function TaskEditor({
   const derivedStatus = getDerivedStatus(draft);
   const hasDerivedStatus = !!derivedStatus;
   const hasStatusOverride = !!draft.statusOverride;
+  const percentForcedStatus = getPercentForcedStatus(draft.percentComplete);
+  const isPercentForced = !!percentForcedStatus;
   const showAutoOption = hasDerivedStatus || hasStatusOverride;
   const manualStatusValue = MANUAL_STATUS_OPTIONS.includes(draft.status) ? draft.status : "";
-  const statusSelectValue = hasStatusOverride
-    ? draft.statusOverride!
-    : hasDerivedStatus
-      ? STATUS_AUTO_VALUE
-      : manualStatusValue;
+  const statusSelectValue = isPercentForced
+    ? percentForcedStatus!
+    : hasStatusOverride
+      ? draft.statusOverride!
+      : hasDerivedStatus
+        ? STATUS_AUTO_VALUE
+        : manualStatusValue;
   const statusPlaceholder = manualStatusValue
     ? "Select status"
     : "Derived from dates";
@@ -688,6 +737,7 @@ function TaskEditor({
   const assignedUserId = draft.assignedUserId || "";
   const photos = draft.photos ?? [];
   const canSave = !!selectedPhaseId && draft.title.trim().length > 0;
+  const percentValue = typeof draft.percentComplete === "number" ? draft.percentComplete : 0;
   const usersPlaceholder = usersLoading
     ? "Loading users..."
     : userOptions.length
@@ -696,6 +746,17 @@ function TaskEditor({
   const dictationSupported =
     typeof window !== "undefined" &&
     !!((window as any)?.SpeechRecognition || (window as any)?.webkitSpeechRecognition);
+
+  function applyPercentComplete(nextValue: number | undefined) {
+    if (!draft) return;
+    const forcedStatus = getPercentForcedStatus(nextValue);
+    setDraft({
+      ...draft,
+      percentComplete: nextValue,
+      status: forcedStatus ?? draft.status ?? "Unassigned",
+      statusOverride: forcedStatus ? undefined : draft.statusOverride,
+    });
+  }
 
   function appendPhotos(next: PhotoAttachment[]) {
     if (!next.length) return;
@@ -816,6 +877,20 @@ function TaskEditor({
                   setDraft({ ...draft, statusOverride: undefined });
                   return;
                 }
+                if (v === "Completed") {
+                  setDraft({
+                    ...draft,
+                    status: "Completed",
+                    percentComplete: 100,
+                    statusOverride: hasDerivedStatus || hasStatusOverride ? "Completed" : draft.statusOverride,
+                  });
+                  return;
+                }
+                const forcedStatus = getPercentForcedStatus(draft.percentComplete);
+                if (forcedStatus) {
+                  setDraft({ ...draft, status: forcedStatus, statusOverride: undefined });
+                  return;
+                }
                 if (hasDerivedStatus || hasStatusOverride) {
                   setDraft({ ...draft, statusOverride: v as TaskStatus });
                   return;
@@ -858,17 +933,29 @@ function TaskEditor({
 
           <div>
             <label className="text-xs font-medium">Percent Complete</label>
-            <div className="mt-1">
+            <div className="mt-1 space-y-2">
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={1}
+                value={percentValue}
+                onChange={(e) => {
+                  const n = Math.max(0, Math.min(100, Math.round(Number(e.target.value))));
+                  applyPercentComplete(n);
+                }}
+                className="w-full"
+              />
               <Input
                 type="number"
                 min={0}
                 max={100}
                 step={1}
-                value={typeof draft.percentComplete === "number" ? String(draft.percentComplete) : ""}
+                value={String(percentValue)}
                 onChange={(e) => {
                   const v = e.target.value;
-                  const n = v === "" ? undefined : Math.max(0, Math.min(100, Math.round(Number(v))));
-                  setDraft({ ...draft, percentComplete: n });
+                  const n = v === "" ? 0 : Math.max(0, Math.min(100, Math.round(Number(v))));
+                  applyPercentComplete(n);
                 }}
                 placeholder="0-100"
                 className="h-10 text-base sm:text-sm bg-white"
@@ -1061,24 +1148,44 @@ function ColumnEditor({
 }
 
 // ======= Text export helpers for reports =======
+function buildThreeWeekGroups(tasks: Task[]) {
+  const today = startOfDay(new Date());
+  const upcomingStatuses: TaskStatus[] = ["This week", "Next week", "Week After"];
+  const groups = new Map<string, { date: Date; items: Task[] }>();
+
+  for (const t of tasks) {
+    if (!upcomingStatuses.includes(getDisplayStatus(t, today))) continue;
+    const weekStart = getTaskWeekStartDate(t);
+    if (!weekStart) continue;
+    const label = formatWeekLabel(weekStart);
+    const existing = groups.get(label);
+    if (existing) {
+      existing.items.push(t);
+    } else {
+      groups.set(label, { date: weekStart, items: [t] });
+    }
+  }
+
+  return Array.from(groups.entries())
+    .map(([label, { date, items }]) => ({ label, date, items }))
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+}
+
 function buildThreeWeekText(tasks: Task[], columns: Column[]): string {
   const today = startOfDay(new Date());
-  const sections: { title: string; key: TaskStatus }[] = [
-    { title: "Completed", key: "Completed" },
-    { title: "In Process", key: "In Process" },
-    { title: "This Week", key: "This week" },
-    { title: "Next Week", key: "Next week" },
-    { title: "Week After", key: "Week After" },
-  ];
-  const colName = (id: string) => columns.find(c => c.id === id)?.name || "Unknown";
+  const completed = tasks.filter((t) => getDisplayStatus(t, today) === "Completed");
+  const inProcess = tasks.filter((t) => getDisplayStatus(t, today) === "In Process");
+  const delayed = tasks.filter((t) => getDisplayStatus(t, today) === "Delayed/Overdue");
+  const groups = buildThreeWeekGroups(tasks);
+  const colNameById = new Map(columns.map((c) => [c.id, c.name]));
+  const colName = (id: string) => colNameById.get(id) || "Unknown";
 
   const lines: string[] = [];
   lines.push("3 Week Look Ahead");
   lines.push("");
 
-  for (const section of sections) {
-    const items = tasks.filter((t) => getDisplayStatus(t, today) === section.key);
-    lines.push(section.title);
+  function pushSection(title: string, items: Task[]) {
+    lines.push(title);
     if (!items.length) {
       lines.push("  (No items)");
     } else {
@@ -1094,6 +1201,14 @@ function buildThreeWeekText(tasks: Task[], columns: Column[]): string {
     }
     lines.push("");
   }
+
+  pushSection("Completed", completed);
+  pushSection("In Process", inProcess);
+  for (const group of groups) {
+    pushSection(group.label, group.items);
+  }
+  pushSection("Delayed/Overdue", delayed);
+
   return lines.join("\n");
 }
 
@@ -1222,15 +1337,12 @@ function openPrintWindowWithText(title: string, text: string) {
 function ThreeWeekReport({ tasks, columns, onClose }: { tasks: Task[]; columns: Column[]; onClose: () => void; }) {
   const textExport = useMemo(() => buildThreeWeekText(tasks, columns), [tasks, columns]);
   const today = startOfDay(new Date());
-
-  const sections: { title: string; key: TaskStatus }[] = [
-    { title: "Completed", key: "Completed" },
-    { title: "In Process", key: "In Process" },
-    { title: "This Week", key: "This week" },
-    { title: "Next Week", key: "Next week" },
-    { title: "Week After", key: "Week After" },
-  ];
-  const colName = (id: string) => columns.find(c => c.id === id)?.name || "Unknown";
+  const completed = useMemo(() => tasks.filter((t) => getDisplayStatus(t, today) === "Completed"), [tasks, today]);
+  const inProcess = useMemo(() => tasks.filter((t) => getDisplayStatus(t, today) === "In Process"), [tasks, today]);
+  const delayed = useMemo(() => tasks.filter((t) => getDisplayStatus(t, today) === "Delayed/Overdue"), [tasks, today]);
+  const weekGroups = useMemo(() => buildThreeWeekGroups(tasks), [tasks]);
+  const colNameById = useMemo(() => new Map(columns.map((c) => [c.id, c.name])), [columns]);
+  const colName = (id: string) => colNameById.get(id) || "Unknown";
 
   return (
     <Sheet open onOpenChange={(v) => { if (!v) onClose(); }}>
@@ -1246,33 +1358,39 @@ function ThreeWeekReport({ tasks, columns, onClose }: { tasks: Task[]; columns: 
               <Button variant="outline" onClick={() => copyTextToClipboard(textExport)}>Copy as text</Button>
             </div>
           </div>
-          {sections.map((section) => {
-            const items = tasks.filter((t) => getDisplayStatus(t, today) === section.key);
-            return (
-              <div key={section.key} className="mb-6">
+          {(() => {
+            const sections: { title: string; items: Task[] }[] = [
+              { title: "Completed", items: completed },
+              { title: "In Process", items: inProcess },
+              ...weekGroups.map((g) => ({ title: g.label, items: g.items })),
+              { title: "Delayed/Overdue", items: delayed },
+            ];
+            return sections.map((section) => (
+              <div key={section.title} className="mb-6">
                 <h3 className="text-lg font-semibold mb-2">{section.title}</h3>
-                {items.length === 0 ? (
+                {section.items.length === 0 ? (
                   <p className="text-sm opacity-60">No items</p>
                 ) : (
-                  <ul className="list-disc list-inside space-y-1">
-                    {items.map((t) => (
-                      <li key={t.id} className="text-sm">
-                        <span className="font-medium">{t.title}</span>
-                        <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-neutral-100 border">
-                          {colName(t.columnId)}
-                        </span>
-                        {typeof t.workDays === 'number' && (
-                          <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-neutral-100 border">
-                            {t.workDays}d
-                          </span>
-                        )}
-                      </li>
-                    ))}
+                  <ul className="space-y-2">
+                    {section.items.map((t) => {
+                      const meta: string[] = [];
+                      const cn = colName(t.columnId);
+                      if (cn) meta.push(cn);
+                      if (typeof t.workDays === "number") meta.push(`${t.workDays}d`);
+                      return (
+                        <li key={t.id} className="text-sm">
+                          <div className="font-medium">{t.title}</div>
+                          {meta.length ? (
+                            <div className="text-xs opacity-60">{meta.join(" • ")}</div>
+                          ) : null}
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
-            );
-          })}
+            ));
+          })()}
         </div>
       </SheetContent>
     </Sheet>
