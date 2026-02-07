@@ -52,11 +52,14 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
     if (shouldShowInitialLoading) setIsInitialBoardLoading(true);
 
     async function loadBoard() {
+      const userId = authUserId;
+      const projectId = currentProjectId;
+      if (!userId || !projectId) return;
       setBoardLoading(true);
       try {
-        const loaded = await svc.loadBoardFromSupabase(currentProjectId, authUserId);
+        const loaded = await svc.loadBoardFromSupabase(projectId, userId);
         if (!loaded.columns.length) {
-          const seeded = await svc.seedDefaultColumnsInSupabase(authUserId, currentProjectId);
+          const seeded = await svc.seedDefaultColumnsInSupabase(userId, projectId);
           if (!cancelled) setData({ columns: seeded || [], tasks: [] });
         } else {
           if (!cancelled) setData({ columns: loaded.columns, tasks: loaded.tasks });
