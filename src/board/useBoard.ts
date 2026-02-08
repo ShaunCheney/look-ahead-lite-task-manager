@@ -122,11 +122,12 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
 
   function saveTask(draft: svc.Task) {
     const normalized = normalizeTask(draft);
+    const hasExisting = normalized.id ? data.tasks.some((t) => t.id === normalized.id) : false;
     const next = (() => {
-      if (normalized.id) {
+      if (normalized.id && hasExisting) {
         return { columns: data.columns, tasks: data.tasks.map((t) => (t.id === normalized.id ? { ...normalized } : t)) };
       }
-      return { columns: data.columns, tasks: [...data.tasks, { ...normalized, id: uuid() }] };
+      return { columns: data.columns, tasks: [...data.tasks, { ...normalized, id: normalized.id || uuid() }] };
     })();
 
     setBoard(next);

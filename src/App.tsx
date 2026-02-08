@@ -71,6 +71,23 @@ interface ProjectRow {
 
 type UserRole = "admin" | "user";
 type ProjectRole = "admin" | "editor" | "viewer";
+type AccessRole = ProjectRole | "none";
+
+type AccessUser = {
+  id: string;
+  email?: string | null;
+};
+
+type AccessProject = {
+  id: string;
+  name: string;
+};
+
+type ProjectMemberRow = {
+  project_id: string;
+  user_id: string;
+  role: ProjectRole;
+};
 
 type UserProfile = UserOption & {
   email?: string;
@@ -1691,6 +1708,15 @@ export default function App() {
   const [activeView, setActiveView] = useState<"tasks" | "logs" | "settings">("tasks");
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [projectRole, setProjectRole] = useState<ProjectRole | null>(null);
+  const [accessUsers, setAccessUsers] = useState<AccessUser[]>([]);
+  const [accessProjects, setAccessProjects] = useState<AccessProject[]>([]);
+  const [accessMembers, setAccessMembers] = useState<ProjectMemberRow[]>([]);
+  const [accessLoading, setAccessLoading] = useState(false);
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const [accessNotice, setAccessNotice] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [accessMutatingKeys, setAccessMutatingKeys] = useState<Set<string>>(() => new Set());
+  const [accessReloadToken, setAccessReloadToken] = useState(0);
+  const [settingsRolesLoading, setSettingsRolesLoading] = useState(false);
 
   
   const {
@@ -1779,15 +1805,32 @@ export default function App() {
   const showTasksView = activeView === "tasks";
   const showLogsView = activeView === "logs";
   const showSettingsView = activeView === "settings";
+  const accessMemberByKey = useMemo(() => {
+    const map = new Map<string, ProjectMemberRow>();
+    for (const member of accessMembers) {
+      map.set(`${member.user_id}:${member.project_id}`, member);
+    }
+    return map;
+  }, [accessMembers]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadSettingsRoles() {
-      if (!authUserId) {
+      setSettingsRolesLoading(true);
+
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      const userId = authData?.user?.id ?? null;
+
+      if (authError) {
+        console.warn("Auth user lookup failed:", authError);
+      }
+
+      if (!userId) {
         if (!cancelled) {
           setIsSuperAdmin(false);
           setProjectRole(null);
+          setSettingsRolesLoading(false);
         }
         return;
       }
@@ -1800,7 +1843,7 @@ export default function App() {
         const profilePromise = supabase
           .from("user_profiles")
           .select("is_super_admin")
-          .eq("user_id", authUserId)
+          .eq("user_id", userId)
           .maybeSingle();
 
         const membershipPromise = currentProjectId
@@ -1808,8 +1851,8 @@ export default function App() {
               .from("project_members")
               .select("role")
               .eq("project_id", currentProjectId)
-              .eq("user_id", authUserId)
-              .maybeSingle()
+            .eq("user_id", userId)
+            .maybeSingle()
           : Promise.resolve({ data: null, error: null });
 
         const [{ data: profileData, error: profileError }, { data: memberData, error: memberError }] =
@@ -1841,6 +1884,8 @@ export default function App() {
           setIsSuperAdmin(false);
           setProjectRole(null);
         }
+      } finally {
+        if (!cancelled) setSettingsRolesLoading(false);
       }
     }
 
@@ -1850,6 +1895,186 @@ export default function App() {
       cancelled = true;
     };
   }, [authUserId, currentProjectId, showSettingsView]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAccessPanel() {
+      if (!isSuperAdmin) {
+        if (!cancelled) {
+          setAccessUsers([]);
+          setAccessProjects([]);
+          setAccessMembers([]);
+          setAccessLoading(false);
+          setAccessError(null);
+          setAccessNotice(null);
+        }
+        return;
+      }
+
+      setAccessLoading(true);
+      setAccessError(null);
+
+      try {
+        const projectsPromise = supabase
+          .from("projects")
+          .select("id,name")
+          .order("name", { ascending: true });
+
+        const membersPromise = supabase
+          .from("project_members")
+          .select("project_id,user_id,role");
+
+        let userRows: any[] = [];
+        let userProfileError: any = null;
+
+        const { data: withEmailRows, error: withEmailError } = await supabase
+          .from("user_profiles")
+          .select("user_id,email")
+          .order("user_id", { ascending: true });
+
+        if (withEmailError) {
+          const { data: withoutEmailRows, error: withoutEmailError } = await supabase
+            .from("user_profiles")
+            .select("user_id")
+            .order("user_id", { ascending: true });
+          if (withoutEmailError) {
+            userProfileError = withoutEmailError;
+          } else {
+            userRows = withoutEmailRows || [];
+          }
+        } else {
+          userRows = withEmailRows || [];
+        }
+
+        const [
+          { data: projectRows, error: projectsError },
+          { data: memberRows, error: membersError },
+        ] = await Promise.all([projectsPromise, membersPromise]);
+
+        if (userProfileError) throw userProfileError;
+        if (projectsError) throw projectsError;
+        if (membersError) throw membersError;
+
+        if (cancelled) return;
+
+        setAccessUsers((userRows || []).map((row: any) => ({
+          id: row.user_id,
+          email: row.email ?? null,
+        })));
+        setAccessProjects((projectRows || []).map((row: any) => ({
+          id: row.id,
+          name: row.name,
+        })));
+        setAccessMembers((memberRows || []).map((row: any) => ({
+          project_id: row.project_id,
+          user_id: row.user_id,
+          role: row.role as ProjectRole,
+        })));
+      } catch (error: any) {
+        console.warn("Access panel load failed:", error);
+        if (!cancelled) {
+          setAccessError(error?.message || "Failed to load access data.");
+        }
+      } finally {
+        if (!cancelled) setAccessLoading(false);
+      }
+    }
+
+    if (showSettingsView && isSuperAdmin) {
+      loadAccessPanel();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSuperAdmin, showSettingsView, accessReloadToken]);
+
+  function accessKey(userId: string, projectId: string) {
+    return `${userId}:${projectId}`;
+  }
+
+  function applyMemberRole(
+    members: ProjectMemberRow[],
+    userId: string,
+    projectId: string,
+    role: AccessRole
+  ) {
+    if (role === "none") {
+      return members.filter((member) => !(member.user_id === userId && member.project_id === projectId));
+    }
+    let found = false;
+    const next = members.map((member) => {
+      if (member.user_id === userId && member.project_id === projectId) {
+        found = true;
+        return { ...member, role };
+      }
+      return member;
+    });
+    if (!found) {
+      next.push({ user_id: userId, project_id: projectId, role });
+    }
+    return next;
+  }
+
+  async function handleAccessRoleChange(userId: string, projectId: string, nextRole: AccessRole) {
+    if (!isSuperAdmin) return;
+    const key = accessKey(userId, projectId);
+    if (accessMutatingKeys.has(key)) return;
+
+    const existing = accessMemberByKey.get(key);
+    if (!existing && nextRole === "none") return;
+    if (existing && existing.role === nextRole) return;
+
+    setAccessNotice(null);
+    setAccessMutatingKeys((prev) => {
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+
+    setAccessMembers((prev) => applyMemberRole(prev, userId, projectId, nextRole));
+
+    try {
+      if (nextRole === "none") {
+        const { error } = await supabase
+          .from("project_members")
+          .delete()
+          .eq("project_id", projectId)
+          .eq("user_id", userId);
+        if (error) throw error;
+        setAccessNotice({ type: "success", message: "Access removed." });
+      } else if (existing) {
+        const { error } = await supabase
+          .from("project_members")
+          .update({ role: nextRole })
+          .eq("project_id", projectId)
+          .eq("user_id", userId);
+        if (error) throw error;
+        setAccessNotice({ type: "success", message: "Role updated." });
+      } else {
+        const { error } = await supabase
+          .from("project_members")
+          .insert({ project_id: projectId, user_id: userId, role: nextRole });
+        if (error) throw error;
+        setAccessNotice({ type: "success", message: "Access granted." });
+      }
+    } catch (error: any) {
+      console.warn("Access update failed:", error);
+      setAccessMembers((prev) => applyMemberRole(prev, userId, projectId, existing?.role ?? "none"));
+      setAccessNotice({ type: "error", message: error?.message || "Failed to update access." });
+    } finally {
+      setAccessMutatingKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
+  async function handleRemoveAccess(userId: string, projectId: string) {
+    await handleAccessRoleChange(userId, projectId, "none");
+  }
 
   // Schema note:
   // - profiles: id, full_name, email, role (default "user"), notify_assignments (default true)
@@ -3710,10 +3935,10 @@ export default function App() {
                   <CardContent className="p-4 space-y-2">
                     <div className="text-sm font-semibold">Account</div>
                     <div className="text-sm text-neutral-600">
-                      Role: <strong>{isSuperAdmin ? "Super Admin" : "User"}</strong>
+                      Role: <strong>{settingsRolesLoading ? "Loading..." : (isSuperAdmin ? "Super Admin" : "User")}</strong>
                     </div>
                     <div className="text-sm text-neutral-600">
-                      Project Role: <strong>{projectRole ?? "No Access"}</strong>
+                      Project Role: <strong>{settingsRolesLoading ? "Loading..." : (projectRole ?? "No Access")}</strong>
                     </div>
                     {userGroupIds.length > 0 && (
                       <div className="text-xs text-neutral-500">
@@ -3722,6 +3947,117 @@ export default function App() {
                     )}
                   </CardContent>
                 </Card>
+
+                {isSuperAdmin && (
+                  <Card className="rounded-2xl border border-neutral-200 bg-white">
+                    <CardContent className="p-4 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="text-sm font-semibold">User & Project Access</div>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="rounded-full"
+                          onClick={() => {
+                            setAccessNotice(null);
+                            setAccessError(null);
+                            setAccessReloadToken((prev) => prev + 1);
+                          }}
+                          disabled={accessLoading}
+                        >
+                          Refresh
+                        </Button>
+                      </div>
+
+                      {accessNotice && (
+                        <div
+                          className={`text-sm ${
+                            accessNotice.type === "success" ? "text-emerald-600" : "text-rose-600"
+                          }`}
+                        >
+                          {accessNotice.message}
+                        </div>
+                      )}
+
+                      {accessLoading ? (
+                        <div className="text-sm text-neutral-500">Loading access data...</div>
+                      ) : accessError ? (
+                        <div className="text-sm text-rose-600">{accessError}</div>
+                      ) : accessUsers.length === 0 ? (
+                        <div className="text-sm text-neutral-500">No users found.</div>
+                      ) : accessProjects.length === 0 ? (
+                        <div className="text-sm text-neutral-500">No projects found.</div>
+                      ) : (
+                        <div className="space-y-4">
+                          {accessUsers.map((user) => (
+                            <Card key={user.id} className="rounded-xl border border-neutral-200">
+                              <CardContent className="p-4 space-y-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-medium truncate">
+                                      {user.email ?? user.id}
+                                    </div>
+                                    {user.email && (
+                                      <div className="text-xs text-neutral-500 truncate">{user.id}</div>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="space-y-2">
+                                  {accessProjects.map((project) => {
+                                    const key = `${user.id}:${project.id}`;
+                                    const member = accessMemberByKey.get(key);
+                                    const currentRole: AccessRole = member?.role ?? "none";
+                                    const isMutating = accessMutatingKeys.has(key);
+                                    return (
+                                      <div
+                                        key={project.id}
+                                        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-200 p-3"
+                                      >
+                                        <div className="min-w-0">
+                                          <div className="text-sm font-medium truncate">{project.name}</div>
+                                          <div className="text-xs text-neutral-500">
+                                            Access: {currentRole}
+                                          </div>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <Select
+                                            value={currentRole}
+                                            onValueChange={(value) =>
+                                              handleAccessRoleChange(user.id, project.id, value as AccessRole)
+                                            }
+                                            disabled={isMutating}
+                                          >
+                                            <SelectTrigger className="w-[140px] bg-white">
+                                              <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent className="bg-white">
+                                              <SelectItem value="none">none</SelectItem>
+                                              <SelectItem value="admin">admin</SelectItem>
+                                              <SelectItem value="editor">editor</SelectItem>
+                                              <SelectItem value="viewer">viewer</SelectItem>
+                                            </SelectContent>
+                                          </Select>
+                                          <Button
+                                            size="sm"
+                                            variant="secondary"
+                                            className="rounded-full"
+                                            onClick={() => handleRemoveAccess(user.id, project.id)}
+                                            disabled={!member || isMutating}
+                                          >
+                                            Remove
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </CardContent>
+                            </Card>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
 
                 {isAdmin ? (
                   <>
