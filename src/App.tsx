@@ -43,9 +43,13 @@ import {
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 
 // recharts for the Task Summary chart
@@ -64,6 +68,31 @@ interface ProjectRow {
   user_id?: string;
   created_at?: string;
 }
+
+type UserRole = "admin" | "user";
+
+type UserProfile = UserOption & {
+  email?: string;
+  role: UserRole;
+  notifyAssignments: boolean;
+};
+
+type GroupRecord = {
+  id: string;
+  name: string;
+  memberIds: string[];
+  projectIds: string[];
+};
+
+type DailyLog = {
+  id: string;
+  projectId: string;
+  userId: string;
+  date: string;
+  description: string;
+  photos: PhotoAttachment[];
+  createdAt?: string;
+};
 
 const STATUS_OPTIONS: TaskStatus[] = [
   "Unassigned",
@@ -233,6 +262,14 @@ function buildInitials(label: string): string {
   const parts = trimmed.split(/\s+/).filter(Boolean);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function normalizeRole(value?: string | null): UserRole {
+  return value === "admin" ? "admin" : "user";
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
 }
 
 function startOfDay(date: Date): Date {
@@ -412,6 +449,7 @@ type TaskCardProps = {
   onRename: (t: Task) => void;
   onViewPhoto?: (photos: PhotoAttachment[], startIndex: number) => void;
   assignedLabel?: string;
+  assignedTitle?: string;
 };
 
 const TaskCard = memo(function TaskCard({
@@ -423,6 +461,7 @@ const TaskCard = memo(function TaskCard({
   onRename,
   onViewPhoto,
   assignedLabel,
+  assignedTitle,
 }: TaskCardProps) {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState(task.title);
@@ -469,7 +508,7 @@ const TaskCard = memo(function TaskCard({
               {assignedDisplay && (
                 <Badge
                   className="rounded-full text-[9px] px-1.5 py-0.5 border bg-white/70 text-neutral-700 border-neutral-300 pointer-events-none"
-                  title={assignedLabel}
+                  title={assignedTitle ?? assignedLabel}
                 >
                   {assignedDisplay}
                 </Badge>
@@ -547,6 +586,7 @@ const TaskCard = memo(function TaskCard({
   prev.displayStatus === next.displayStatus &&
   prev.tone === next.tone &&
   prev.assignedLabel === next.assignedLabel &&
+  prev.assignedTitle === next.assignedTitle &&
   prev.onEdit === next.onEdit &&
   prev.onDelete === next.onDelete &&
   prev.onRename === next.onRename &&
@@ -614,7 +654,7 @@ function TaskEditor({
   onRequestCamera: (onPhotos: (photos: PhotoAttachment[]) => void) => void;
   onRequestFiles: (onPhotos: (photos: PhotoAttachment[]) => void) => void;
   onPhaseChange?: (value: string) => void;
-  onAssignedChange?: (value: string) => void;
+  onAssignedChange?: (value: string[]) => void;
   isMobile: boolean;
 }) {
   const [draft, setDraft] = useState<Task | null>(openTask);
@@ -734,7 +774,12 @@ function TaskEditor({
   const phaseOptions = columns;
   const selectedPhaseId = draft.phaseId || draft.columnId || phaseOptions[0]?.id || "";
   const userOptions = users;
-  const assignedUserId = draft.assignedUserId || "";
+  const assignedUserIds = Array.isArray(draft.assignedUserIds) && draft.assignedUserIds.length
+    ? draft.assignedUserIds
+    : draft.assignedUserId
+      ? [draft.assignedUserId]
+      : [];
+  const assignmentNotifications = draft.assignmentNotifications ?? {};
   const photos = draft.photos ?? [];
   const canSave = !!selectedPhaseId && draft.title.trim().length > 0;
   const percentValue = typeof draft.percentComplete === "number" ? draft.percentComplete : 0;
@@ -764,6 +809,46 @@ function TaskEditor({
       if (!prev) return prev;
       const existing = prev.photos ?? [];
       return { ...prev, photos: [...existing, ...next] };
+    });
+  }
+
+  function setAssignedUsers(nextIds: string[]) {
+    const normalized = uniqueStrings(nextIds);
+    setDraft((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        assignedUserIds: normalized.length ? normalized : undefined,
+        assignedUserId: normalized[0] || "",
+      };
+    });
+    onAssignedChange?.(normalized);
+  }
+
+  function toggleAssignedUser(userId: string, isChecked: boolean) {
+    const nextIds = isChecked
+      ? [...assignedUserIds, userId]
+      : assignedUserIds.filter((id) => id !== userId);
+    const nextNotifications = { ...assignmentNotifications };
+    if (!isChecked) {
+      delete nextNotifications[userId];
+    }
+    setDraft((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        assignmentNotifications: nextNotifications,
+      };
+    });
+    setAssignedUsers(nextIds);
+  }
+
+  function toggleAssignmentNotify(userId: string, isChecked: boolean) {
+    setDraft((prev) => {
+      if (!prev) return prev;
+      const nextNotifications = { ...(prev.assignmentNotifications ?? {}) };
+      nextNotifications[userId] = isChecked;
+      return { ...prev, assignmentNotifications: nextNotifications };
     });
   }
 
@@ -847,25 +932,43 @@ function TaskEditor({
 
           <div>
             <label className="text-xs font-medium">Assigned To</label>
-            <Select
-              value={assignedUserId}
-              onValueChange={(value) => {
-                setDraft({ ...draft, assignedUserId: value });
-                onAssignedChange?.(value);
-              }}
-              disabled={usersLoading || !userOptions.length}
-            >
-              <SelectTrigger className="w-full bg-white">
-                <SelectValue placeholder={usersPlaceholder} />
-              </SelectTrigger>
-              <SelectContent className="bg-white">
-                {userOptions.map((user) => (
-                  <SelectItem key={user.id} value={user.id}>
-                    {user.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="mt-2 space-y-2">
+              {usersLoading ? (
+                <div className="text-xs text-neutral-500">Loading users...</div>
+              ) : userOptions.length ? (
+                userOptions.map((user) => {
+                  const isAssigned = assignedUserIds.includes(user.id);
+                  const notifyValue = assignmentNotifications[user.id] ?? user.notifyAssignments ?? true;
+                  return (
+                    <div
+                      key={user.id}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-neutral-200 bg-white px-3 py-2"
+                    >
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={isAssigned}
+                          onCheckedChange={(checked) => toggleAssignedUser(user.id, checked === true)}
+                        />
+                        <span>{user.label}</span>
+                      </label>
+                      <div className="flex items-center gap-2 text-[11px] text-neutral-500">
+                        <span>Email</span>
+                        <Switch
+                          checked={notifyValue}
+                          onCheckedChange={(checked) => toggleAssignmentNotify(user.id, checked)}
+                          disabled={!isAssigned}
+                        />
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="text-xs text-neutral-500">{usersPlaceholder}</div>
+              )}
+            </div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Only users with access to this project are shown.
+            </div>
           </div>
 
           <div>
@@ -1569,9 +1672,22 @@ export default function App() {
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [allProjects, setAllProjects] = useState<ProjectRow[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState<string>("");
+  const [profiles, setProfiles] = useState<UserProfile[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [groups, setGroups] = useState<GroupRecord[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [dailyLogs, setDailyLogs] = useState<DailyLog[]>([]);
+  const [dailyLogsLoading, setDailyLogsLoading] = useState(false);
+  const [dailyLogsError, setDailyLogsError] = useState<string | null>(null);
+  const [logDraft, setLogDraft] = useState<{ description: string; photos: PhotoAttachment[] }>({
+    description: "",
+    photos: [],
+  });
+
+  const [activeView, setActiveView] = useState<"tasks" | "logs" | "settings">("tasks");
 
   
   const {
@@ -1597,11 +1713,9 @@ export default function App() {
   const [photoViewer, setPhotoViewer] = useState<{ photos: PhotoAttachment[]; index: number } | null>(null);
   const [queuedPhotos, setQueuedPhotos] = useState<PhotoAttachment[]>([]);
 
-  const [users, setUsers] = useState<UserOption[]>([]);
-  const [usersLoading, setUsersLoading] = useState(false);
-  const [taskDefaults, setTaskDefaults] = useState<{ phaseId: string; assignedUserId: string }>({
+  const [taskDefaults, setTaskDefaults] = useState<{ phaseId: string; assignedUserIds: string[] }>({
     phaseId: "",
-    assignedUserId: "",
+    assignedUserIds: [],
   });
 
 
@@ -1611,6 +1725,65 @@ export default function App() {
 
 
   const isAuthed = !!authUserId;
+  const currentUserProfile = useMemo(
+    () => profiles.find((p) => p.id === authUserId) || null,
+    [profiles, authUserId]
+  );
+  const authRole = currentUserProfile?.role ?? "user";
+  const isAdmin = authRole === "admin";
+  const userGroupIds = useMemo(() => {
+    if (!authUserId) return [] as string[];
+    return groups
+      .filter((g) => g.memberIds.includes(authUserId))
+      .map((g) => g.id);
+  }, [groups, authUserId]);
+  // Permission: non-admins only see projects via group membership or ownership.
+  const projects = useMemo(() => {
+    if (!authUserId) return [] as ProjectRow[];
+    if (isAdmin) return allProjects;
+    const accessible = new Set<string>();
+    for (const group of groups) {
+      if (group.memberIds.includes(authUserId)) {
+        for (const projectId of group.projectIds) accessible.add(projectId);
+      }
+    }
+    for (const project of allProjects) {
+      if (project.user_id === authUserId) accessible.add(project.id);
+    }
+    return allProjects.filter((p) => accessible.has(p.id));
+  }, [allProjects, authUserId, isAdmin, groups]);
+  // Permission: only users with project access can be assigned tasks.
+  const assignableUsers = useMemo(() => {
+    if (!currentProjectId) return [] as UserProfile[];
+    if (isAdmin) return profiles;
+    const accessibleUserIds = new Set<string>();
+    for (const profile of profiles) {
+      if (profile.role === "admin") accessibleUserIds.add(profile.id);
+    }
+    const project = allProjects.find((p) => p.id === currentProjectId);
+    if (project?.user_id) accessibleUserIds.add(project.user_id);
+    for (const group of groups) {
+      if (!group.projectIds.includes(currentProjectId)) continue;
+      for (const userId of group.memberIds) accessibleUserIds.add(userId);
+    }
+    return profiles.filter((p) => accessibleUserIds.has(p.id));
+  }, [profiles, groups, currentProjectId, isAdmin, allProjects]);
+  const canAccessCurrentProject = useMemo(() => {
+    if (!currentProjectId) return false;
+    if (isAdmin) return true;
+    return projects.some((p) => p.id === currentProjectId);
+  }, [currentProjectId, isAdmin, projects]);
+  const showTasksView = activeView === "tasks";
+  const showLogsView = activeView === "logs";
+  const showSettingsView = activeView === "settings";
+
+  // Schema note:
+  // - profiles: id, full_name, email, role (default "user"), notify_assignments (default true)
+  useEffect(() => {
+    if (currentProjectId && !projects.some((p) => p.id === currentProjectId)) {
+      setCurrentProjectId(projects[0]?.id || "");
+    }
+  }, [projects, currentProjectId]);
   const todayStamp = startOfDay(new Date()).getTime();
   const today = new Date(todayStamp);
   // Memoize derived statuses/tone so list rendering doesn't recompute per render.
@@ -1633,9 +1806,32 @@ export default function App() {
     [tasks, columns, todayStamp, displayStatusById]
   );
   const userLabelById = useMemo(
-    () => new Map(users.map((u) => [u.id, u.label])),
-    [users]
+    () => new Map(profiles.map((u) => [u.id, u.label])),
+    [profiles]
   );
+  const profileById = useMemo(
+    () => new Map(profiles.map((u) => [u.id, u])),
+    [profiles]
+  );
+  const assignedSummaryByTaskId = useMemo(() => {
+    const map = new Map<string, { label: string; title: string }>();
+    for (const task of tasks) {
+      const ids = uniqueStrings(
+        task.assignedUserIds && task.assignedUserIds.length
+          ? task.assignedUserIds
+          : task.assignedUserId
+            ? [task.assignedUserId]
+            : []
+      );
+      if (!ids.length) continue;
+      const labels = ids.map((id) => userLabelById.get(id) || id.slice(0, 8));
+      const primary = labels[0] || "";
+      const extraCount = labels.length - 1;
+      const label = extraCount > 0 ? `${primary} +${extraCount}` : primary;
+      map.set(task.id, { label, title: labels.join(", ") });
+    }
+    return map;
+  }, [tasks, userLabelById]);
   const sensors = useSensors(
     useSensor(MouseSensor),
     useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } }),
@@ -1697,6 +1893,107 @@ export default function App() {
     scheduleSaveBoard(next.columns, next.tasks);
   }
 
+  // ================= Auth fixes =================
+  async function ensureProfile(user: { id: string; email?: string | null }) {
+    if (!user?.id) return;
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id,role,notify_assignments,email")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (error) {
+      console.warn("Profile lookup failed:", error);
+      return;
+    }
+
+    if (!data) {
+      const { error: insertError } = await supabase.from("profiles").insert({
+        id: user.id,
+        email: user.email ?? null,
+        role: "user",
+        notify_assignments: true,
+      });
+      if (insertError) {
+        console.warn("Profile bootstrap failed:", insertError);
+      }
+      return;
+    }
+
+    const updates: Record<string, any> = {};
+    if (!data.role) updates.role = "user";
+    if (data.notify_assignments === null || data.notify_assignments === undefined) {
+      updates.notify_assignments = true;
+    }
+    if (!data.email && user.email) updates.email = user.email;
+    if (Object.keys(updates).length) {
+      const { error: updateError } = await supabase.from("profiles").update(updates).eq("id", user.id);
+      if (updateError) {
+        console.warn("Profile bootstrap update failed:", updateError);
+      }
+    }
+  }
+
+  async function handleSignUp() {
+    setAuthError(null);
+    if (!email.trim() || !password.trim()) {
+      setAuthError("Email and password are required.");
+      return;
+    }
+    const { data, error } = await supabase.auth.signUp({ email: email.trim(), password });
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+    if (data?.user) {
+      await ensureProfile(data.user);
+    }
+    if (!data?.session) {
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+      if (signInError) {
+        setAuthError(signInError.message);
+        return;
+      }
+      if (signInData?.user) {
+        await ensureProfile(signInData.user);
+      }
+    }
+  }
+
+  async function handleSignIn() {
+    setAuthError(null);
+    if (!email.trim() || !password.trim()) {
+      setAuthError("Email and password are required.");
+      return;
+    }
+    const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    if (error) {
+      setAuthError(error.message);
+      return;
+    }
+    if (data?.user) {
+      await ensureProfile(data.user);
+    }
+  }
+
+  async function handleSignOut() {
+    setAuthError(null);
+    const { error } = await supabase.auth.signOut({ scope: "local" });
+    if (error) {
+      setAuthError(error.message);
+    }
+    if (!error) {
+      setAuthUserId(null);
+      setAuthEmail(null);
+    }
+    setEmail("");
+    setPassword("");
+    setCurrentProjectId("");
+    setBoard({ columns: [], tasks: [] });
+  }
+
 
 
   // ================= Auth boot + listener =================
@@ -1708,11 +2005,17 @@ export default function App() {
       if (mounted) {
         setAuthUserId(session?.user?.id ?? null);
         setAuthEmail(session?.user?.email ?? null);
-        setAuthError(sessionError ? sessionError.message : null);
+        if (sessionError) {
+          console.warn("Auth session error:", sessionError);
+          setAuthError(sessionError.message);
+        } else {
+          setAuthError(null);
+        }
       }
 
       const { data: sub } = supabase.auth.onAuthStateChange((_event, session2) => {
         if (!mounted) return;
+        console.info("[auth] state change:", _event, session2?.user?.id ?? "none");
         setAuthUserId(session2?.user?.id ?? null);
         setAuthEmail(session2?.user?.email ?? null);
         setAuthError(null);
@@ -1720,6 +2023,7 @@ export default function App() {
         if (session2?.user?.id) {
           setEmail("");
           setPassword("");
+          void ensureProfile(session2.user);
         }
       });
 
@@ -1746,59 +2050,141 @@ export default function App() {
   }, [columns, taskDefaults.phaseId]);
 
   useEffect(() => {
-    if (authUserId && !taskDefaults.assignedUserId) {
-      setTaskDefaults((prev) => ({ ...prev, assignedUserId: authUserId }));
+    if (authUserId && taskDefaults.assignedUserIds.length === 0) {
+      setTaskDefaults((prev) => ({ ...prev, assignedUserIds: [authUserId] }));
     }
-  }, [authUserId, taskDefaults.assignedUserId]);
+  }, [authUserId, taskDefaults.assignedUserIds.length]);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function loadUsers() {
+    async function loadProfiles() {
       if (!authUserId) {
         if (!cancelled) {
-          setUsers([]);
-          setUsersLoading(false);
+          setProfiles([]);
+          setProfilesLoading(false);
         }
         return;
       }
-      setUsersLoading(true);
+      setProfilesLoading(true);
 
       try {
-        const me: UserOption = { id: authUserId, label: authEmail || "You" };
-        if (!cancelled) setUsers([me]);
-
         const { data, error } = await supabase
           .from("profiles")
-          .select("id,full_name,email")
+          .select("id,full_name,email,role,notify_assignments")
           .order("full_name", { ascending: true });
 
         if (error) throw error;
 
-        const options: UserOption[] = (data || []).map((u: any) => ({
+        const options: UserProfile[] = (data || []).map((u: any) => ({
           id: u.id,
           label: u.full_name || u.email || u.id.slice(0, 8),
+          email: u.email || undefined,
+          role: normalizeRole(u.role),
+          notifyAssignments: u.notify_assignments !== false,
         }));
 
-        const unique = new Map<string, UserOption>();
+        const me: UserProfile = {
+          id: authUserId,
+          label: authEmail || "You",
+          email: authEmail || undefined,
+          role: normalizeRole(options.find((u) => u.id === authUserId)?.role),
+          notifyAssignments: options.find((u) => u.id === authUserId)?.notifyAssignments ?? true,
+        };
+
+        const unique = new Map<string, UserProfile>();
         for (const opt of [me, ...options]) unique.set(opt.id, opt);
 
-        if (!cancelled) setUsers(Array.from(unique.values()));
+        if (!cancelled) setProfiles(Array.from(unique.values()));
       } catch (e) {
         console.warn("Falling back to current user list:", e);
         if (!cancelled) {
-          setUsers([{ id: authUserId, label: authEmail || "You" }]);
+          setProfiles([{
+            id: authUserId,
+            label: authEmail || "You",
+            email: authEmail || undefined,
+            role: "user",
+            notifyAssignments: true,
+          }]);
         }
       } finally {
-        if (!cancelled) setUsersLoading(false);
+        if (!cancelled) setProfilesLoading(false);
       }
     }
 
-    loadUsers();
+    loadProfiles();
     return () => {
       cancelled = true;
     };
   }, [authUserId, authEmail]);
+
+  // ================= Groups & access (schema required) =================
+  // Schema note:
+  // - groups: id, name, created_by, created_at
+  // - group_members: group_id, user_id
+  // - project_group_access: project_id, group_id
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadGroups() {
+      if (!authUserId) {
+        if (!cancelled) {
+          setGroups([]);
+          setGroupsLoading(false);
+        }
+        return;
+      }
+      setGroupsLoading(true);
+
+      try {
+        const { data: groupRows, error: groupError } = await supabase
+          .from("groups")
+          .select("id,name")
+          .order("name", { ascending: true });
+        if (groupError) throw groupError;
+
+        const { data: memberRows, error: memberError } = await supabase
+          .from("group_members")
+          .select("group_id,user_id");
+        if (memberError) throw memberError;
+
+        const { data: accessRows, error: accessError } = await supabase
+          .from("project_group_access")
+          .select("group_id,project_id");
+        if (accessError) throw accessError;
+
+        const membersByGroup = new Map<string, string[]>();
+        for (const row of memberRows || []) {
+          const list = membersByGroup.get(row.group_id) || [];
+          list.push(row.user_id);
+          membersByGroup.set(row.group_id, list);
+        }
+        const projectsByGroup = new Map<string, string[]>();
+        for (const row of accessRows || []) {
+          const list = projectsByGroup.get(row.group_id) || [];
+          list.push(row.project_id);
+          projectsByGroup.set(row.group_id, list);
+        }
+
+        const normalized: GroupRecord[] = (groupRows || []).map((group: any) => ({
+          id: group.id,
+          name: group.name,
+          memberIds: uniqueStrings(membersByGroup.get(group.id) || []),
+          projectIds: uniqueStrings(projectsByGroup.get(group.id) || []),
+        }));
+
+        if (!cancelled) setGroups(normalized);
+      } catch (error) {
+        console.warn("Group load failed:", error);
+        if (!cancelled) setGroups([]);
+      } finally {
+        if (!cancelled) setGroupsLoading(false);
+      }
+    }
+
+    loadGroups();
+    return () => { cancelled = true; };
+  }, [authUserId]);
 
   // ================= Load projects from Supabase =================
   useEffect(() => {
@@ -1809,7 +2195,7 @@ export default function App() {
 
       if (!authUserId) {
         if (!cancelled) {
-          setProjects([]);
+          setAllProjects([]);
           setCurrentProjectId("");
           setBoard({ columns: [], tasks: [] });
           setProjectsLoading(false);
@@ -1826,7 +2212,7 @@ export default function App() {
 
       if (error) {
         console.error(error);
-        setProjects([]);
+        setAllProjects([]);
         setCurrentProjectId("");
         setBoard({ columns: [], tasks: [] });
         setProjectsLoading(false);
@@ -1834,11 +2220,18 @@ export default function App() {
       }
 
       const rows = (data || []) as ProjectRow[];
-      setProjects(rows);
+      setAllProjects(rows);
+
+      const accessibleRows = isAdmin
+        ? rows
+        : rows.filter((p) => {
+          if (p.user_id === authUserId) return true;
+          return groups.some((g) => g.memberIds.includes(authUserId) && g.projectIds.includes(p.id));
+        });
 
       setCurrentProjectId((prev) => {
-        if (prev && rows.some((p) => p.id === prev)) return prev;
-        return rows[0]?.id ?? "";
+        if (prev && accessibleRows.some((p) => p.id === prev)) return prev;
+        return accessibleRows[0]?.id ?? "";
       });
 
       setProjectsLoading(false);
@@ -1846,7 +2239,62 @@ export default function App() {
 
     loadProjects();
     return () => { cancelled = true; };
-  }, [authUserId]);
+  }, [authUserId, isAdmin, groups]);
+
+  // ================= Daily Logs (schema required) =================
+  // Schema note:
+  // - daily_logs: id, project_id, user_id, log_date, description, photos (jsonb), created_at
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDailyLogs() {
+      if (!authUserId || !currentProjectId || !canAccessCurrentProject) {
+        if (!cancelled) {
+          setDailyLogs([]);
+          setDailyLogsLoading(false);
+          setDailyLogsError(null);
+        }
+        return;
+      }
+      setDailyLogsLoading(true);
+      setDailyLogsError(null);
+
+      try {
+        const { data, error } = await supabase
+          .from("daily_logs")
+          .select("id,project_id,user_id,log_date,description,photos,created_at")
+          .eq("project_id", currentProjectId)
+          .order("log_date", { ascending: false })
+          .order("created_at", { ascending: false });
+
+        if (error) throw error;
+
+        const logs: DailyLog[] = (data || []).map((row: any) => ({
+          id: row.id,
+          projectId: row.project_id,
+          userId: row.user_id,
+          date: row.log_date,
+          description: row.description || "",
+          photos: Array.isArray(row.photos) ? row.photos : [],
+          createdAt: row.created_at || undefined,
+        }));
+
+        if (!cancelled) setDailyLogs(logs);
+      } catch (error: any) {
+        console.warn("Daily logs load failed:", error);
+        if (!cancelled) setDailyLogsError(error?.message || "Failed to load daily logs.");
+      } finally {
+        if (!cancelled) setDailyLogsLoading(false);
+      }
+    }
+
+    loadDailyLogs();
+    return () => { cancelled = true; };
+  }, [authUserId, currentProjectId, canAccessCurrentProject]);
+
+  useEffect(() => {
+    setLogDraft({ description: "", photos: [] });
+  }, [currentProjectId]);
 
   // Board loading handled by `useBoard` hook
   // Tasks are grouped + sorted locally for display
@@ -1859,12 +2307,19 @@ export default function App() {
       return;
     }
     const rows = (data || []) as ProjectRow[];
-    setProjects(rows);
+    setAllProjects(rows);
+
+    const accessibleRows = isAdmin
+      ? rows
+      : rows.filter((p) => {
+        if (p.user_id === authUserId) return true;
+        return groups.some((g) => g.memberIds.includes(authUserId || "") && g.projectIds.includes(p.id));
+      });
 
     const chosen =
-      (preferId && rows.some(p => p.id === preferId) ? preferId : undefined) ||
-      (currentProjectId && rows.some(p => p.id === currentProjectId) ? currentProjectId : undefined) ||
-      rows[0]?.id ||
+      (preferId && accessibleRows.some(p => p.id === preferId) ? preferId : undefined) ||
+      (currentProjectId && accessibleRows.some(p => p.id === currentProjectId) ? currentProjectId : undefined) ||
+      accessibleRows[0]?.id ||
       "";
 
     setCurrentProjectId(chosen);
@@ -1918,7 +2373,7 @@ export default function App() {
       return;
     }
 
-    setProjects(prev => prev.map(p => (p.id === currentProjectId ? { ...p, name } : p)));
+    setAllProjects(prev => prev.map(p => (p.id === currentProjectId ? { ...p, name } : p)));
   }
 
   async function handleDuplicateCurrentProject() {
@@ -1975,6 +2430,8 @@ export default function App() {
       notes: buildTaskNotes(t.notes, {
         phaseId: t.phaseId || t.columnId,
         assignedUserId: t.assignedUserId,
+        assignedUserIds: t.assignedUserIds,
+        assignmentNotifications: t.assignmentNotifications,
         startDate: t.startDate,
         endDate: t.endDate,
         photos: t.photos,
@@ -2106,6 +2563,8 @@ export default function App() {
               columnId: column.id,
               phaseId: column.id,
               assignedUserId: authUserId || "",
+              assignedUserIds: authUserId ? [authUserId] : [],
+              assignmentNotifications: {},
               startDate: undefined,
               endDate: undefined,
               photos: [],
@@ -2177,16 +2636,75 @@ export default function App() {
     input.click();
   }
 
+  function getAssignedIds(task: Task) {
+    return uniqueStrings(
+      task.assignedUserIds && task.assignedUserIds.length
+        ? task.assignedUserIds
+        : task.assignedUserId
+          ? [task.assignedUserId]
+          : []
+    );
+  }
+
+  async function triggerAssignmentNotifications(payload: {
+    task: Task;
+    projectId: string;
+    userIds: string[];
+  }) {
+    if (!payload.userIds.length) return;
+    // Notification bridge (wire to your backend/email provider in one place).
+    try {
+      if (!supabase.functions) return;
+      await supabase.functions.invoke("task-assignment-notify", {
+        body: {
+          taskId: payload.task.id,
+          projectId: payload.projectId,
+          assignedUserIds: payload.userIds,
+        },
+      });
+    } catch (error) {
+      console.warn("Assignment notification trigger failed:", error);
+    }
+  }
+
+  const handleSaveTask = useCallback((draft: Task) => {
+    const nextTask = draft.id ? draft : { ...draft, id: uuid() };
+    const prevTask = draft.id ? tasks.find((t) => t.id === draft.id) : undefined;
+    const prevAssigned = prevTask ? getAssignedIds(prevTask) : [];
+    const nextAssigned = getAssignedIds(nextTask);
+    const newlyAssigned = nextAssigned.filter((id) => !prevAssigned.includes(id));
+
+    const notifyIds = newlyAssigned.filter((id) => {
+      const profile = profileById.get(id);
+      const userPref = profile?.notifyAssignments ?? true;
+      const perAssignment = nextTask.assignmentNotifications?.[id];
+      return perAssignment !== false && userPref;
+    });
+
+    saveTask(nextTask);
+
+    if (currentProjectId && notifyIds.length) {
+      void triggerAssignmentNotifications({ task: nextTask, projectId: currentProjectId, userIds: notifyIds });
+    }
+  }, [tasks, saveTask, currentProjectId, profileById]);
+
   function buildNewTask(overridePhaseId?: string): Task {
     const phaseId = overridePhaseId || taskDefaults.phaseId || columns[0]?.id || "";
-    const assignedUserId = taskDefaults.assignedUserId || authUserId || "";
-    setTaskDefaults((prev) => ({ ...prev, phaseId, assignedUserId }));
+    const assignedUserIds = taskDefaults.assignedUserIds.length
+      ? taskDefaults.assignedUserIds
+      : authUserId
+        ? [authUserId]
+        : [];
+    const assignedUserId = assignedUserIds[0] || "";
+    setTaskDefaults((prev) => ({ ...prev, phaseId, assignedUserIds }));
     return {
       id: "",
       title: "",
       columnId: phaseId,
       phaseId,
       assignedUserId,
+      assignedUserIds,
+      assignmentNotifications: {},
       startDate: undefined,
       endDate: undefined,
       status: "Unassigned",
@@ -2217,6 +2735,198 @@ export default function App() {
     openCreateTask(phaseId);
   }
 
+  function resetLogDraft() {
+    setLogDraft({ description: "", photos: [] });
+  }
+
+  function handleAddLogPhotos() {
+    requestImageAttachments({
+      onComplete: (photos) => {
+        setLogDraft((prev) => ({ ...prev, photos: [...prev.photos, ...photos] }));
+      },
+    });
+  }
+
+  function removeLogPhoto(photoId: string) {
+    setLogDraft((prev) => ({ ...prev, photos: prev.photos.filter((p) => p.id !== photoId) }));
+  }
+
+  async function handleSaveDailyLog() {
+    if (!authUserId || !currentProjectId) {
+      alert("Please select a project first.");
+      return;
+    }
+    if (!canAccessCurrentProject) {
+      alert("You do not have access to this project.");
+      return;
+    }
+
+    const description = logDraft.description.trim();
+    if (!description && logDraft.photos.length === 0) {
+      alert("Add a description or at least one photo.");
+      return;
+    }
+
+    const payload = {
+      project_id: currentProjectId,
+      user_id: authUserId,
+      log_date: toIsoDateString(new Date()),
+      description,
+      photos: logDraft.photos,
+    };
+
+    const { data, error } = await supabase
+      .from("daily_logs")
+      .insert(payload)
+      .select("id,project_id,user_id,log_date,description,photos,created_at")
+      .single();
+
+    if (error) {
+      console.error(error);
+      alert(error.message || "Failed to save daily log.");
+      return;
+    }
+
+    const newLog: DailyLog = {
+      id: data.id,
+      projectId: data.project_id,
+      userId: data.user_id,
+      date: data.log_date,
+      description: data.description || "",
+      photos: Array.isArray(data.photos) ? data.photos : [],
+      createdAt: data.created_at || undefined,
+    };
+
+    setDailyLogs((prev) => [newLog, ...prev]);
+    resetLogDraft();
+  }
+
+  // ================= Roles & Groups (admin only) =================
+  async function handleRoleChange(userId: string, role: UserRole) {
+    // Permission: only admin users can manage roles.
+    if (!isAdmin) return;
+    const { error } = await supabase.from("profiles").update({ role }).eq("id", userId);
+    if (error) {
+      console.error(error);
+      alert(error.message || "Failed to update role.");
+      return;
+    }
+    setProfiles((prev) => prev.map((p) => (p.id === userId ? { ...p, role } : p)));
+  }
+
+  async function handleNotifyPreferenceChange(userId: string, notify: boolean) {
+    // Permission: only admin users can manage user permissions.
+    if (!isAdmin) return;
+    const { error } = await supabase.from("profiles").update({ notify_assignments: notify }).eq("id", userId);
+    if (error) {
+      console.error(error);
+      alert(error.message || "Failed to update notification preference.");
+      return;
+    }
+    setProfiles((prev) => prev.map((p) => (p.id === userId ? { ...p, notifyAssignments: notify } : p)));
+  }
+
+  async function handleCreateGroup() {
+    // Permission: only admin users can manage groups.
+    if (!isAdmin || !authUserId) return;
+    const name = prompt("New group name?")?.trim();
+    if (!name) return;
+    const { data, error } = await supabase
+      .from("groups")
+      .insert({ name, created_by: authUserId })
+      .select("id,name")
+      .single();
+    if (error) {
+      console.error(error);
+      alert(error.message || "Failed to create group.");
+      return;
+    }
+    setGroups((prev) => [...prev, { id: data.id, name: data.name, memberIds: [], projectIds: [] }]);
+  }
+
+  async function handleRenameGroup(groupId: string, name: string) {
+    // Permission: only admin users can manage groups.
+    if (!isAdmin) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const { error } = await supabase.from("groups").update({ name: trimmed }).eq("id", groupId);
+    if (error) {
+      console.error(error);
+      alert(error.message || "Failed to rename group.");
+      return;
+    }
+    setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, name: trimmed } : g)));
+  }
+
+  async function handleDeleteGroup(groupId: string) {
+    // Permission: only admin users can manage groups.
+    if (!isAdmin) return;
+    if (!confirm("Delete this group?")) return;
+    await supabase.from("group_members").delete().eq("group_id", groupId);
+    await supabase.from("project_group_access").delete().eq("group_id", groupId);
+    const { error } = await supabase.from("groups").delete().eq("id", groupId);
+    if (error) {
+      console.error(error);
+      alert(error.message || "Failed to delete group.");
+      return;
+    }
+    setGroups((prev) => prev.filter((g) => g.id !== groupId));
+  }
+
+  async function persistGroupMembers(groupId: string, memberIds: string[]) {
+    await supabase.from("group_members").delete().eq("group_id", groupId);
+    if (memberIds.length) {
+      const payload = memberIds.map((userId) => ({ group_id: groupId, user_id: userId }));
+      const { error } = await supabase.from("group_members").insert(payload);
+      if (error) throw error;
+    }
+  }
+
+  async function persistGroupProjects(groupId: string, projectIds: string[]) {
+    await supabase.from("project_group_access").delete().eq("group_id", groupId);
+    if (projectIds.length) {
+      const payload = projectIds.map((projectId) => ({ group_id: groupId, project_id: projectId }));
+      const { error } = await supabase.from("project_group_access").insert(payload);
+      if (error) throw error;
+    }
+  }
+
+  async function toggleGroupMember(groupId: string, userId: string) {
+    // Permission: only admin users can manage groups.
+    if (!isAdmin) return;
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return;
+    const isMember = group.memberIds.includes(userId);
+    const nextMembers = isMember
+      ? group.memberIds.filter((id) => id !== userId)
+      : [...group.memberIds, userId];
+    setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, memberIds: nextMembers } : g)));
+    try {
+      await persistGroupMembers(groupId, nextMembers);
+    } catch (error: any) {
+      console.error(error);
+      alert(error?.message || "Failed to update group members.");
+    }
+  }
+
+  async function toggleGroupProjectAccess(groupId: string, projectId: string) {
+    // Permission: only admin users can manage project access.
+    if (!isAdmin) return;
+    const group = groups.find((g) => g.id === groupId);
+    if (!group) return;
+    const hasAccess = group.projectIds.includes(projectId);
+    const nextProjects = hasAccess
+      ? group.projectIds.filter((id) => id !== projectId)
+      : [...group.projectIds, projectId];
+    setGroups((prev) => prev.map((g) => (g.id === groupId ? { ...g, projectIds: nextProjects } : g)));
+    try {
+      await persistGroupProjects(groupId, nextProjects);
+    } catch (error: any) {
+      console.error(error);
+      alert(error?.message || "Failed to update project access.");
+    }
+  }
+
   function handleReportSelect(value: string) {
     if (value === "threeWeek") setShowReport(true);
     else if (value === "ownerUpdate") setShowOwner(true);
@@ -2225,13 +2935,20 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full max-w-[100vw] bg-white overflow-x-hidden">
-      <CameraTaskButton
-        onRequestPhoto={handleAddTaskPhoto}
-        disabled={false}
-      />
+      {showTasksView && (
+        <CameraTaskButton
+          onRequestPhoto={handleAddTaskPhoto}
+          disabled={false}
+        />
+      )}
       <div
         className="w-full max-w-[100vw] mx-auto px-3 sm:px-6 pb-4 space-y-4 overflow-x-hidden"
-        style={{ paddingTop: "calc(env(safe-area-inset-top) + 60px)" }}
+        style={{
+          paddingTop: showTasksView
+            ? "calc(env(safe-area-inset-top) + 60px)"
+            : "calc(env(safe-area-inset-top) + 16px)",
+          paddingBottom: isMobile ? "calc(env(safe-area-inset-bottom) + 84px)" : undefined,
+        }}
       >
         <header
           className="relative z-10 bg-white pb-3 overflow-x-hidden"
@@ -2241,6 +2958,34 @@ export default function App() {
               <h1 className="text-xl sm:text-2xl font-bold flex items-center gap-2">
                 <Columns className="h-5 w-5" /> Integrated Look Ahead
               </h1>
+              {!isMobile && (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant={showTasksView ? "default" : "secondary"}
+                    className={showTasksView ? "rounded-full bg-neutral-800 text-white hover:bg-neutral-700" : "rounded-full"}
+                    onClick={() => setActiveView("tasks")}
+                  >
+                    Tasks
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={showLogsView ? "default" : "secondary"}
+                    className={showLogsView ? "rounded-full bg-neutral-800 text-white hover:bg-neutral-700" : "rounded-full"}
+                    onClick={() => setActiveView("logs")}
+                  >
+                    Daily Logs
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={showSettingsView ? "default" : "secondary"}
+                    className={showSettingsView ? "rounded-full bg-neutral-800 text-white hover:bg-neutral-700" : "rounded-full"}
+                    onClick={() => setActiveView("settings")}
+                  >
+                    Settings
+                  </Button>
+                </div>
+              )}
 
               {/* ================= MOBILE HEADER (clean, hamburger) ================= */}
               {isMobile ? (
@@ -2309,24 +3054,14 @@ export default function App() {
                                 <div className="flex gap-2">
                                   <Button
                                     className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700 flex-1"
-                                    onClick={async () => {
-                                      setAuthError(null);
-                                      const { error } = await supabase.auth.signUp({ email, password });
-                                      if (error) setAuthError(error.message);
-                                      else alert("Signed up. Now click Sign In.");
-                                    }}
+                                    onClick={handleSignUp}
                                   >
                                     Sign Up
                                   </Button>
 
                                   <Button
                                     className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700 flex-1"
-                                    onClick={async () => {
-                                      setAuthError(null);
-                                      const { error } = await supabase.auth.signInWithPassword({ email, password });
-                                      if (error) setAuthError(error.message);
-                                      else setMobileMenuOpen(false);
-                                    }}
+                                    onClick={handleSignIn}
                                   >
                                     Sign In
                                   </Button>
@@ -2347,9 +3082,7 @@ export default function App() {
                                   variant="secondary"
                                   className="rounded-full w-full justify-start"
                                   onClick={async () => {
-                                    await supabase.auth.signOut();
-                                    setCurrentProjectId("");
-                                    setBoard({ columns: [], tasks: [] });
+                                    await handleSignOut();
                                     setMobileMenuOpen(false);
                                   }}
                                 >
@@ -2385,82 +3118,86 @@ export default function App() {
                             </Button>
                           </div>
 
-                          {/* Reports */}
-                          <div className="space-y-2">
-                            <div className="text-sm font-semibold">Reports</div>
-                            <Select
-                              onValueChange={(v) => {
-                                setMobileMenuOpen(false);
-                                handleReportSelect(v);
-                              }}
-                              disabled={!currentProjectId}
-                            >
-                              <SelectTrigger className="w-full bg-white">
-                                <SelectValue placeholder="Reports" />
-                              </SelectTrigger>
-                              <SelectContent className="bg-white">
-                                <SelectItem value="threeWeek">3 Week Look Ahead</SelectItem>
-                                <SelectItem value="ownerUpdate">Owner Update</SelectItem>
-                                <SelectItem value="taskSummary">Task Summary</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
+                          {showTasksView && (
+                            <>
+                              {/* Reports */}
+                              <div className="space-y-2">
+                                <div className="text-sm font-semibold">Reports</div>
+                                <Select
+                                  onValueChange={(v) => {
+                                    setMobileMenuOpen(false);
+                                    handleReportSelect(v);
+                                  }}
+                                  disabled={!currentProjectId}
+                                >
+                                  <SelectTrigger className="w-full bg-white">
+                                    <SelectValue placeholder="Reports" />
+                                  </SelectTrigger>
+                                  <SelectContent className="bg-white">
+                                    <SelectItem value="threeWeek">3 Week Look Ahead</SelectItem>
+                                    <SelectItem value="ownerUpdate">Owner Update</SelectItem>
+                                    <SelectItem value="taskSummary">Task Summary</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
 
-                          {/* Phases */}
-                          <div className="space-y-2">
-                            <div className="text-sm font-semibold">Phases</div>
-                            <Button
-                              className="rounded-full w-full justify-start bg-neutral-800 text-white hover:bg-neutral-700"
-                              onClick={() => {
-                                setMobileMenuOpen(false);
-                                addColumn();
-                              }}
-                              disabled={!currentProjectId || !isAuthed}
-                            >
-                              <Plus className="h-4 w-4 mr-2" /> New Phase
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              className="rounded-full w-full justify-start"
-                              onClick={() => {
-                                collapseAllPhases();
-                                setMobileMenuOpen(false);
-                              }}
-                              disabled={columns.length === 0}
-                            >
-                              Collapse All
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              className="rounded-full w-full justify-start"
-                              onClick={() => {
-                                expandAllPhases();
-                                setMobileMenuOpen(false);
-                              }}
-                              disabled={columns.length === 0}
-                            >
-                              Expand All
-                            </Button>
-                          </div>
+                              {/* Phases */}
+                              <div className="space-y-2">
+                                <div className="text-sm font-semibold">Phases</div>
+                                <Button
+                                  className="rounded-full w-full justify-start bg-neutral-800 text-white hover:bg-neutral-700"
+                                  onClick={() => {
+                                    setMobileMenuOpen(false);
+                                    addColumn();
+                                  }}
+                                  disabled={!currentProjectId || !isAuthed}
+                                >
+                                  <Plus className="h-4 w-4 mr-2" /> New Phase
+                                </Button>
+                                <Button
+                                  variant="secondary"
+                                  className="rounded-full w-full justify-start"
+                                  onClick={() => {
+                                    collapseAllPhases();
+                                    setMobileMenuOpen(false);
+                                  }}
+                                  disabled={columns.length === 0}
+                                >
+                                  Collapse All
+                                </Button>
+                                <Button
+                                  variant="secondary"
+                                  className="rounded-full w-full justify-start"
+                                  onClick={() => {
+                                    expandAllPhases();
+                                    setMobileMenuOpen(false);
+                                  }}
+                                  disabled={columns.length === 0}
+                                >
+                                  Expand All
+                                </Button>
+                              </div>
 
-                          {/* Data */}
-                          <div className="space-y-2">
-                            <div className="text-sm font-semibold">Data</div>
-                            <Button
-                              className="rounded-full w-full justify-start bg-neutral-800 text-white hover:bg-neutral-700"
-                              onClick={() => { setMobileMenuOpen(false); handleExportCsv(); }}
-                              disabled={!currentProjectId}
-                            >
-                              <Upload className="h-4 w-4 mr-2" /> Export
-                            </Button>
-                            <Button
-                              className="rounded-full w-full justify-start bg-neutral-800 text-white hover:bg-neutral-700"
-                              onClick={() => { setMobileMenuOpen(false); handleImportCsv(); }}
-                              disabled={!currentProjectId || !isAuthed}
-                            >
-                              <Download className="h-4 w-4 mr-2" /> Import
-                            </Button>
-                          </div>
+                              {/* Data */}
+                              <div className="space-y-2">
+                                <div className="text-sm font-semibold">Data</div>
+                                <Button
+                                  className="rounded-full w-full justify-start bg-neutral-800 text-white hover:bg-neutral-700"
+                                  onClick={() => { setMobileMenuOpen(false); handleExportCsv(); }}
+                                  disabled={!currentProjectId}
+                                >
+                                  <Upload className="h-4 w-4 mr-2" /> Export
+                                </Button>
+                                <Button
+                                  className="rounded-full w-full justify-start bg-neutral-800 text-white hover:bg-neutral-700"
+                                  onClick={() => { setMobileMenuOpen(false); handleImportCsv(); }}
+                                  disabled={!currentProjectId || !isAuthed}
+                                >
+                                  <Download className="h-4 w-4 mr-2" /> Import
+                                </Button>
+                              </div>
+                            </>
+                          )}
 
                           {/* Loading indicator while phases + tasks are loading (non-blocking). */}
                           {boardLoading && (
@@ -2506,28 +3243,19 @@ export default function App() {
                       </div>
 
                       <div className="flex gap-2">
-                        <Button
-                          className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
-                          onClick={async () => {
-                            setAuthError(null);
-                            const { error } = await supabase.auth.signUp({ email, password });
-                            if (error) setAuthError(error.message);
-                            else alert("Signed up. Now click Sign In.");
-                          }}
-                        >
-                          Sign Up
-                        </Button>
+                                  <Button
+                                    className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
+                                    onClick={handleSignUp}
+                                  >
+                                    Sign Up
+                                  </Button>
 
-                        <Button
-                          className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
-                          onClick={async () => {
-                            setAuthError(null);
-                            const { error } = await supabase.auth.signInWithPassword({ email, password });
-                            if (error) setAuthError(error.message);
-                          }}
-                        >
-                          Sign In
-                        </Button>
+                                  <Button
+                                    className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
+                                    onClick={handleSignIn}
+                                  >
+                                    Sign In
+                                  </Button>
                       </div>
 
                       {authError && (
@@ -2544,11 +3272,7 @@ export default function App() {
                       <Button
                         variant="secondary"
                         className="rounded-full"
-                        onClick={async () => {
-                          await supabase.auth.signOut();
-                          setCurrentProjectId("");
-                          setBoard({ columns: [], tasks: [] });
-                        }}
+                        onClick={handleSignOut}
                       >
                         <LogOut className="h-4 w-4 mr-1" /> Sign Out
                       </Button>
@@ -2610,48 +3334,52 @@ export default function App() {
                         )}
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 justify-start">
-                        <Select onValueChange={handleReportSelect} disabled={!currentProjectId}>
-                          <SelectTrigger className="w-[160px] bg-white">
-                            <SelectValue placeholder="Reports" />
-                          </SelectTrigger>
-                          <SelectContent className="bg-white">
-                            <SelectItem value="threeWeek">3 Week Look Ahead</SelectItem>
-                            <SelectItem value="ownerUpdate">Owner Update</SelectItem>
-                            <SelectItem value="taskSummary">Task Summary</SelectItem>
-                          </SelectContent>
-                        </Select>
+                      {showTasksView && (
+                        <>
+                          <div className="flex flex-wrap items-center gap-2 justify-start">
+                            <Select onValueChange={handleReportSelect} disabled={!currentProjectId}>
+                              <SelectTrigger className="w-[160px] bg-white">
+                                <SelectValue placeholder="Reports" />
+                              </SelectTrigger>
+                              <SelectContent className="bg-white">
+                                <SelectItem value="threeWeek">3 Week Look Ahead</SelectItem>
+                                <SelectItem value="ownerUpdate">Owner Update</SelectItem>
+                                <SelectItem value="taskSummary">Task Summary</SelectItem>
+                              </SelectContent>
+                            </Select>
 
-                        <Button
-                          variant="secondary"
-                          className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
-                          onClick={addColumn}
-                          disabled={!currentProjectId || !isAuthed}
-                        >
-                          <Plus className="h-4 w-4 mr-1" /> New Phase
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
-                          onClick={handleExportCsv}
-                          disabled={!currentProjectId}
-                        >
-                          <Upload className="h-4 w-4 mr-1" /> Export
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
-                          onClick={handleImportCsv}
-                          disabled={!currentProjectId || !isAuthed}
-                        >
-                          <Download className="h-4 w-4 mr-1" /> Import
-                        </Button>
-                      </div>
+                            <Button
+                              variant="secondary"
+                              className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
+                              onClick={addColumn}
+                              disabled={!currentProjectId || !isAuthed}
+                            >
+                              <Plus className="h-4 w-4 mr-1" /> New Phase
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
+                              onClick={handleExportCsv}
+                              disabled={!currentProjectId}
+                            >
+                              <Upload className="h-4 w-4 mr-1" /> Export
+                            </Button>
+                            <Button
+                              variant="secondary"
+                              className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
+                              onClick={handleImportCsv}
+                              disabled={!currentProjectId || !isAuthed}
+                            >
+                              <Download className="h-4 w-4 mr-1" /> Import
+                            </Button>
+                          </div>
 
-                      {boardError && (
-                        <div className="text-sm text-rose-600">
-                          {boardError}
-                        </div>
+                          {boardError && (
+                            <div className="text-sm text-rose-600">
+                              {boardError}
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
@@ -2662,7 +3390,8 @@ export default function App() {
           </div>
         </header>
 
-        {isMobile && isInitialBoardLoading ? (
+        {showTasksView && (
+          isMobile && isInitialBoardLoading ? (
           <div className="text-sm opacity-60">Loading board…</div>
         ) : (
           <DndContext
@@ -2745,7 +3474,8 @@ export default function App() {
                                           onDelete={handleDeleteTask}
                                           onRename={handleRenameTask}
                                           onViewPhoto={handleViewPhotos}
-                                          assignedLabel={userLabelById.get(t.assignedUserId)}
+                                          assignedLabel={assignedSummaryByTaskId.get(t.id)?.label}
+                                          assignedTitle={assignedSummaryByTaskId.get(t.id)?.title}
                                         />
                                       );
                                     })}
@@ -2773,12 +3503,325 @@ export default function App() {
               </div>
             </SortableContext>
           </DndContext>
+        )
+        )}
+
+        {showLogsView && (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="text-lg font-semibold">Daily Logs</div>
+              {currentProjectId && (
+                <Badge className="rounded-full bg-neutral-200 text-neutral-700 border border-neutral-300">
+                  {projects.find((p) => p.id === currentProjectId)?.name || "Project"}
+                </Badge>
+              )}
+            </div>
+
+            {!isAuthed ? (
+              <div className="text-sm text-neutral-500">Sign in to view daily logs.</div>
+            ) : !currentProjectId ? (
+              <div className="text-sm text-neutral-500">Select a project to view logs.</div>
+            ) : !canAccessCurrentProject ? (
+              <div className="text-sm text-rose-600">You do not have access to this project.</div>
+            ) : (
+              <div className="space-y-4">
+                <Card className="rounded-2xl border border-neutral-200 bg-neutral-50/70">
+                  <CardContent className="p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold">New Log</div>
+                      <Badge className="rounded-full bg-white text-neutral-700 border border-neutral-300">
+                        {toIsoDateString(new Date())}
+                      </Badge>
+                    </div>
+                    <Textarea
+                      value={logDraft.description}
+                      onChange={(e) => setLogDraft((prev) => ({ ...prev, description: e.target.value }))}
+                      placeholder="What happened today?"
+                      className="bg-white"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        variant="secondary"
+                        className="rounded-full"
+                        onClick={handleAddLogPhotos}
+                      >
+                        <ImagePlus className="h-4 w-4 mr-2" /> Add Photos
+                      </Button>
+                      <Button
+                        className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
+                        onClick={handleSaveDailyLog}
+                      >
+                        Save Log
+                      </Button>
+                    </div>
+                    {logDraft.photos.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {logDraft.photos.map((photo) => (
+                          <div key={photo.id} className="relative">
+                            <button
+                              type="button"
+                              className="absolute -top-2 -right-2 bg-white border border-neutral-200 rounded-full h-6 w-6 flex items-center justify-center"
+                              onClick={() => removeLogPhoto(photo.id)}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                            <img
+                              src={photo.uri}
+                              alt="Daily log attachment"
+                              className="h-20 w-20 rounded-lg object-cover border border-neutral-200"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {dailyLogsLoading ? (
+                  <div className="text-sm text-neutral-500">Loading logs...</div>
+                ) : dailyLogsError ? (
+                  <div className="text-sm text-rose-600">{dailyLogsError}</div>
+                ) : dailyLogs.length === 0 ? (
+                  <div className="text-sm text-neutral-500">No logs yet.</div>
+                ) : (
+                  <div className="space-y-3">
+                    {dailyLogs.map((log) => (
+                      <Card key={log.id} className="rounded-2xl border border-neutral-200 bg-white">
+                        <CardContent className="p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-semibold">{log.date}</div>
+                            <div className="text-xs text-neutral-500">
+                              {userLabelById.get(log.userId) || log.userId.slice(0, 8)}
+                            </div>
+                          </div>
+                          {log.description && (
+                            <div className="text-sm whitespace-pre-wrap">{log.description}</div>
+                          )}
+                          {log.photos.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                              {log.photos.map((photo, idx) => (
+                                <button
+                                  key={photo.id}
+                                  type="button"
+                                  className="border border-neutral-200 rounded-lg overflow-hidden h-20 w-20"
+                                  onClick={() => handleViewPhotos(log.photos, idx)}
+                                >
+                                  <img
+                                    src={photo.uri}
+                                    alt="Daily log attachment"
+                                    className="h-full w-full object-cover"
+                                  />
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {showSettingsView && (
+          <div className="space-y-4">
+            <div className="text-lg font-semibold">Settings</div>
+            {!isAuthed ? (
+              <div className="text-sm text-neutral-500">Sign in to manage settings.</div>
+            ) : (
+              <div className="space-y-4">
+                <Card className="rounded-2xl border border-neutral-200 bg-white">
+                  <CardContent className="p-4 space-y-2">
+                    <div className="text-sm font-semibold">Account</div>
+                    <div className="text-sm text-neutral-600">
+                      Role: <strong>{authRole}</strong>
+                    </div>
+                    {userGroupIds.length > 0 && (
+                      <div className="text-xs text-neutral-500">
+                        Groups: {userGroupIds.length}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {isAdmin ? (
+                  <>
+                    <Card className="rounded-2xl border border-neutral-200 bg-white">
+                      <CardContent className="p-4 space-y-3">
+                        <div className="text-sm font-semibold">User Permissions</div>
+                        {profilesLoading ? (
+                          <div className="text-sm text-neutral-500">Loading users...</div>
+                        ) : (
+                          <div className="space-y-2">
+                            {profiles.map((user) => (
+                              <div
+                                key={user.id}
+                                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-200 p-3"
+                              >
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium truncate">{user.label}</div>
+                                  <div className="text-xs text-neutral-500 truncate">{user.email || user.id}</div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <Select
+                                    value={user.role}
+                                    onValueChange={(value) => handleRoleChange(user.id, value as UserRole)}
+                                  >
+                                    <SelectTrigger className="w-[120px] bg-white">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent className="bg-white">
+                                      <SelectItem value="admin">admin</SelectItem>
+                                      <SelectItem value="user">user</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                  <div className="flex items-center gap-2 text-xs text-neutral-500">
+                                    <span>Email</span>
+                                    <Switch
+                                      checked={user.notifyAssignments}
+                                      onCheckedChange={(checked) => handleNotifyPreferenceChange(user.id, checked)}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card className="rounded-2xl border border-neutral-200 bg-white">
+                      <CardContent className="p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm font-semibold">Groups & Project Access</div>
+                          <Button
+                            size="sm"
+                            className="rounded-full bg-neutral-800 text-white hover:bg-neutral-700"
+                            onClick={handleCreateGroup}
+                          >
+                            <Plus className="h-4 w-4 mr-1" /> New Group
+                          </Button>
+                        </div>
+                        {groupsLoading ? (
+                          <div className="text-sm text-neutral-500">Loading groups...</div>
+                        ) : groups.length === 0 ? (
+                          <div className="text-sm text-neutral-500">No groups yet.</div>
+                        ) : (
+                          <div className="space-y-3">
+                            {groups.map((group) => (
+                              <Card key={group.id} className="rounded-xl border border-neutral-200">
+                                <CardContent className="p-4 space-y-3">
+                                  <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <Input
+                                      value={group.name}
+                                      onChange={(e) => {
+                                        const nextName = e.target.value;
+                                        setGroups((prev) => prev.map((g) => (g.id === group.id ? { ...g, name: nextName } : g)));
+                                      }}
+                                      onBlur={() => handleRenameGroup(group.id, group.name)}
+                                      className="bg-white max-w-[240px]"
+                                    />
+                                    <Button
+                                      size="sm"
+                                      variant="secondary"
+                                      className="rounded-full"
+                                      onClick={() => handleDeleteGroup(group.id)}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </div>
+                                  <Separator />
+                                  <div className="space-y-2">
+                                    <div className="text-xs font-semibold text-neutral-600">Members</div>
+                                    <div className="flex flex-wrap gap-3">
+                                      {profiles.map((user) => (
+                                        <label key={user.id} className="flex items-center gap-2 text-sm">
+                                          <Checkbox
+                                            checked={group.memberIds.includes(user.id)}
+                                            onCheckedChange={(checked) => {
+                                              if (checked === "indeterminate") return;
+                                              void toggleGroupMember(group.id, user.id);
+                                            }}
+                                          />
+                                          <span>{user.label}</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  </div>
+                                  <Separator />
+                                  <div className="space-y-2">
+                                    <div className="text-xs font-semibold text-neutral-600">Project Access</div>
+                                    <div className="flex flex-wrap gap-3">
+                                      {allProjects.map((project) => (
+                                        <label key={project.id} className="flex items-center gap-2 text-sm">
+                                          <Checkbox
+                                            checked={group.projectIds.includes(project.id)}
+                                            onCheckedChange={(checked) => {
+                                              if (checked === "indeterminate") return;
+                                              void toggleGroupProjectAccess(group.id, project.id);
+                                            }}
+                                          />
+                                          <span>{project.name}</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            ))}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </>
+                ) : (
+                  <div className="text-sm text-neutral-500">
+                    You do not have admin permissions to manage roles or groups.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         )}
       </div>
 
-      {showReport && <ThreeWeekReport tasks={tasks} columns={columns} onClose={() => setShowReport(false)} />}
-      {showOwner && <OwnerUpdateReport tasks={tasks} columns={columns} onClose={() => setShowOwner(false)} />}
-      {showSummary && <TaskSummaryChart tasks={tasks} columns={columns} onClose={() => setShowSummary(false)} />}
+      {/* UI addition: mobile bottom navigation */}
+      {isMobile && (
+        <nav
+          className="fixed bottom-0 left-0 right-0 z-40 border-t border-neutral-200 bg-white/95 backdrop-blur"
+          style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        >
+          <div className="grid grid-cols-3 gap-1 p-2">
+            <Button
+              variant={showTasksView ? "default" : "secondary"}
+              className={showTasksView ? "rounded-full bg-neutral-800 text-white hover:bg-neutral-700" : "rounded-full"}
+              onClick={() => setActiveView("tasks")}
+            >
+              Tasks
+            </Button>
+            <Button
+              variant={showLogsView ? "default" : "secondary"}
+              className={showLogsView ? "rounded-full bg-neutral-800 text-white hover:bg-neutral-700" : "rounded-full"}
+              onClick={() => setActiveView("logs")}
+            >
+              Daily Logs
+            </Button>
+            <Button
+              variant={showSettingsView ? "default" : "secondary"}
+              className={showSettingsView ? "rounded-full bg-neutral-800 text-white hover:bg-neutral-700" : "rounded-full"}
+              onClick={() => setActiveView("settings")}
+            >
+              Settings
+            </Button>
+          </div>
+        </nav>
+      )}
+
+      {showTasksView && showReport && <ThreeWeekReport tasks={tasks} columns={columns} onClose={() => setShowReport(false)} />}
+      {showTasksView && showOwner && <OwnerUpdateReport tasks={tasks} columns={columns} onClose={() => setShowOwner(false)} />}
+      {showTasksView && showSummary && <TaskSummaryChart tasks={tasks} columns={columns} onClose={() => setShowSummary(false)} />}
 
       <TaskPhotoViewer
         open={!!photoViewer}
@@ -2789,20 +3832,20 @@ export default function App() {
 
       <TaskEditor
         openTask={openTask}
-        onSave={saveTask}
+        onSave={handleSaveTask}
         onClose={() => {
           setQueuedPhotos([]);
           setOpenTask(null);
         }}
         columns={columns}
-        users={users}
-        usersLoading={usersLoading}
+        users={assignableUsers}
+        usersLoading={profilesLoading}
         incomingPhotos={queuedPhotos}
         onConsumeIncomingPhotos={() => setQueuedPhotos([])}
         onRequestCamera={(onPhotos) => requestImageAttachments({ capture: "environment", onComplete: onPhotos })}
         onRequestFiles={(onPhotos) => requestImageAttachments({ onComplete: onPhotos })}
         onPhaseChange={(value) => setTaskDefaults((prev) => ({ ...prev, phaseId: value }))}
-        onAssignedChange={(value) => setTaskDefaults((prev) => ({ ...prev, assignedUserId: value }))}
+        onAssignedChange={(value) => setTaskDefaults((prev) => ({ ...prev, assignedUserIds: value }))}
         isMobile={isMobile}
       />
       {openColumn !== undefined && (

@@ -6,6 +6,9 @@ import type { PhotoAttachment } from "@/board/boardService";
 export interface UserOption {
   id: string;
   label: string;
+  email?: string;
+  role?: "admin" | "user";
+  notifyAssignments?: boolean;
 }
 
 type CameraTaskButtonProps = {

@@ -89,6 +89,14 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
   function normalizeTask(draft: svc.Task): svc.Task {
     const columnId = draft.columnId || draft.phaseId;
     const phaseId = draft.phaseId || draft.columnId;
+    const normalizedAssignedIds = Array.isArray(draft.assignedUserIds) && draft.assignedUserIds.length
+      ? Array.from(new Set(draft.assignedUserIds.filter(Boolean)))
+      : draft.assignedUserId
+        ? [draft.assignedUserId]
+        : authUserId
+          ? [authUserId]
+          : [];
+    const primaryAssignedId = normalizedAssignedIds[0] || draft.assignedUserId || authUserId || "";
     const percentComplete =
       typeof draft.percentComplete === "number" && Number.isFinite(draft.percentComplete)
         ? Math.max(0, Math.min(100, Math.round(draft.percentComplete)))
@@ -103,7 +111,9 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
       ...draft,
       columnId,
       phaseId,
-      assignedUserId: draft.assignedUserId || authUserId || "",
+      assignedUserId: primaryAssignedId,
+      assignedUserIds: normalizedAssignedIds.length ? normalizedAssignedIds : undefined,
+      assignmentNotifications: draft.assignmentNotifications,
       status: forcedStatus ?? (draft?.status || "Unassigned"),
       percentComplete,
       statusOverride: draft.statusOverride,

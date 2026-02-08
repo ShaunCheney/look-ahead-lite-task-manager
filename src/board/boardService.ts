@@ -30,6 +30,8 @@ export interface Task {
   title: string;
   phaseId: string;
   assignedUserId: string;
+  assignedUserIds?: string[];
+  assignmentNotifications?: Record<string, boolean>;
   startDate?: string;
   endDate?: string;
   photos?: PhotoAttachment[];
@@ -44,6 +46,8 @@ export interface Task {
 type TaskMeta = {
   phaseId?: string;
   assignedUserId?: string;
+  assignedUserIds?: string[];
+  assignmentNotifications?: Record<string, boolean>;
   startDate?: string;
   endDate?: string;
   photos?: PhotoAttachment[];
@@ -106,6 +110,12 @@ export async function loadBoardFromSupabase(projectId: string, authUserId?: stri
     const meta = parsed.meta;
     const columnId = r.column_id as string;
     const phaseId = meta?.phaseId || columnId;
+    const fallbackAssigned = meta?.assignedUserId || authUserId || "";
+    const assignedUserIds = Array.isArray(meta?.assignedUserIds)
+      ? meta?.assignedUserIds.filter(Boolean)
+      : fallbackAssigned
+        ? [fallbackAssigned]
+        : [];
     const percentComplete =
       typeof meta?.percentComplete === "number" && Number.isFinite(meta.percentComplete)
         ? meta.percentComplete
@@ -123,7 +133,9 @@ export async function loadBoardFromSupabase(projectId: string, authUserId?: stri
       workDays: typeof r.work_days === "number" ? r.work_days : undefined,
       columnId,
       phaseId,
-      assignedUserId: meta?.assignedUserId || authUserId || "",
+      assignedUserId: assignedUserIds[0] || fallbackAssigned,
+      assignedUserIds: assignedUserIds.length ? assignedUserIds : undefined,
+      assignmentNotifications: meta?.assignmentNotifications,
       startDate: meta?.startDate,
       endDate: meta?.endDate,
       photos: metaPhotos && metaPhotos.length ? metaPhotos : undefined,
@@ -172,6 +184,8 @@ export async function saveBoardToSupabase(nextCols: Column[], nextTasks: Task[],
     const meta: TaskMeta = {
       phaseId: t.phaseId || t.columnId,
       assignedUserId: t.assignedUserId,
+      assignedUserIds: t.assignedUserIds && t.assignedUserIds.length ? t.assignedUserIds : undefined,
+      assignmentNotifications: t.assignmentNotifications,
       startDate: t.startDate,
       endDate: t.endDate,
       photos: t.photos && t.photos.length ? t.photos : undefined,
