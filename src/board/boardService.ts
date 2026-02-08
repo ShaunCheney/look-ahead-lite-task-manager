@@ -77,6 +77,45 @@ function parseTaskMeta(notes?: string | null): { meta?: TaskMeta; text?: string 
   return { meta, text: text || undefined };
 }
 
+function mapTaskRowToTask(row: any, authUserId?: string): Task {
+  const parsed = parseTaskMeta(row.notes || undefined);
+  const meta = parsed.meta;
+  const columnId = row.column_id as string;
+  const phaseId = meta?.phaseId || columnId;
+  const fallbackAssigned = meta?.assignedUserId || authUserId || "";
+  const assignedUserIds = Array.isArray(meta?.assignedUserIds)
+    ? meta?.assignedUserIds.filter(Boolean)
+    : fallbackAssigned
+      ? [fallbackAssigned]
+      : [];
+  const percentComplete =
+    typeof meta?.percentComplete === "number" && Number.isFinite(meta.percentComplete)
+      ? meta.percentComplete
+      : 0;
+  const metaPhotos = Array.isArray(meta?.photos)
+    ? meta?.photos
+    : meta?.photo
+      ? [meta.photo]
+      : undefined;
+  return {
+    id: row.id,
+    title: row.title,
+    notes: row.notes || undefined,
+    status: (row.status as TaskStatus) || "Unassigned",
+    workDays: typeof row.work_days === "number" ? row.work_days : undefined,
+    columnId,
+    phaseId,
+    assignedUserId: assignedUserIds[0] || fallbackAssigned,
+    assignedUserIds: assignedUserIds.length ? assignedUserIds : undefined,
+    assignmentNotifications: meta?.assignmentNotifications,
+    startDate: meta?.startDate,
+    endDate: meta?.endDate,
+    photos: metaPhotos && metaPhotos.length ? metaPhotos : undefined,
+    percentComplete,
+    statusOverride: meta?.statusOverride,
+  };
+}
+
 export function buildTaskNotes(existingNotes: string | undefined, meta: TaskMeta): string | null {
   const parsed = parseTaskMeta(existingNotes);
   const text = parsed.text ?? (existingNotes ? existingNotes.trimEnd() : undefined);
@@ -105,44 +144,7 @@ export async function loadBoardFromSupabase(projectId: string, authUserId?: stri
   if (taskErr) throw taskErr;
 
   const cols: Column[] = (colRows || []).map((r: any) => ({ id: r.id, name: r.name }));
-  const tks: Task[] = (taskRows || []).map((r: any) => {
-    const parsed = parseTaskMeta(r.notes || undefined);
-    const meta = parsed.meta;
-    const columnId = r.column_id as string;
-    const phaseId = meta?.phaseId || columnId;
-    const fallbackAssigned = meta?.assignedUserId || authUserId || "";
-    const assignedUserIds = Array.isArray(meta?.assignedUserIds)
-      ? meta?.assignedUserIds.filter(Boolean)
-      : fallbackAssigned
-        ? [fallbackAssigned]
-        : [];
-    const percentComplete =
-      typeof meta?.percentComplete === "number" && Number.isFinite(meta.percentComplete)
-        ? meta.percentComplete
-        : 0;
-    const metaPhotos = Array.isArray(meta?.photos)
-      ? meta?.photos
-      : meta?.photo
-        ? [meta.photo]
-        : undefined;
-    return {
-      id: r.id,
-      title: r.title,
-      notes: r.notes || undefined,
-      status: (r.status as TaskStatus) || "Unassigned",
-      workDays: typeof r.work_days === "number" ? r.work_days : undefined,
-      columnId,
-      phaseId,
-      assignedUserId: assignedUserIds[0] || fallbackAssigned,
-      assignedUserIds: assignedUserIds.length ? assignedUserIds : undefined,
-      assignmentNotifications: meta?.assignmentNotifications,
-      startDate: meta?.startDate,
-      endDate: meta?.endDate,
-      photos: metaPhotos && metaPhotos.length ? metaPhotos : undefined,
-      percentComplete,
-      statusOverride: meta?.statusOverride,
-    };
-  });
+  const tks: Task[] = (taskRows || []).map((r: any) => mapTaskRowToTask(r, authUserId));
 
   return { columns: cols, tasks: tks };
 }
@@ -194,8 +196,8 @@ export async function saveBoardToSupabase(nextCols: Column[], nextTasks: Task[],
     };
     return {
       id: t.id,
-      user_id: authUserId,
-      project_id: currentProjectId,
+      user_id: authUserId, // Fix: set user_id for RLS/NOT NULL constraints
+      project_id: currentProjectId, // Fix: always include project_id
       column_id: t.columnId,
       title: t.title,
       notes: buildTaskNotes(t.notes, meta),
@@ -207,6 +209,47 @@ export async function saveBoardToSupabase(nextCols: Column[], nextTasks: Task[],
 
   await upsertTasksWithRetry(taskPayload);
 }
+
+export async function saveTaskToSupabase(task: Task, projectId: string, sortOrder: number, authUserId: string) {
+  // Fix: save single task with user_id for RLS/NOT NULL constraints.
+  const meta: TaskMeta = {
+    phaseId: task.phaseId || task.columnId,
+    assignedUserId: task.assignedUserId,
+    assignedUserIds: task.assignedUserIds && task.assignedUserIds.length ? task.assignedUserIds : undefined,
+    assignmentNotifications: task.assignmentNotifications,
+    startDate: task.startDate,
+    endDate: task.endDate,
+    photos: task.photos && task.photos.length ? task.photos : undefined,
+    percentComplete: typeof task.percentComplete === "number" ? task.percentComplete : undefined,
+    statusOverride: task.statusOverride,
+  };
+
+  const payload = {
+    id: task.id,
+    user_id: authUserId,
+    project_id: projectId,
+    column_id: task.columnId,
+    title: task.title,
+    notes: buildTaskNotes(task.notes, meta),
+    status: task.status,
+    work_days: typeof task.workDays === "number" ? task.workDays : null,
+    sort_order: sortOrder,
+  };
+
+  const { data, error } = await supabase
+    .from("tasks")
+    .upsert([payload], { onConflict: "id" })
+    .select("id,title,notes,status,work_days,sort_order,column_id");
+
+  if (error) throw error;
+  const row = data?.[0];
+  if (!row) {
+    throw new Error("Task save did not return a row.");
+  }
+  return row;
+}
+
+export { mapTaskRowToTask };
 
 function isStatementTimeout(error: any) {
   const message = typeof error?.message === "string" ? error.message : String(error || "");

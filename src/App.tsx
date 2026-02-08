@@ -1,5 +1,6 @@
 import { supabase } from "./supabaseClient";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import type { Session } from "@supabase/supabase-js";
 import { v4 as uuid } from "uuid";
 import {
   DndContext,
@@ -662,7 +663,7 @@ function TaskEditor({
   isMobile,
 }: {
   openTask: Task | null;
-  onSave: (t: Task) => void;
+  onSave: (t: Task) => Promise<boolean>;
   onClose: () => void;
   columns: Column[];
   users: UserOption[];
@@ -881,9 +882,9 @@ function TaskEditor({
                 size="sm"
                 className="rounded-full"
                 disabled={!canSave}
-                onClick={() => {
-                  onSave(draft);
-                  onClose();
+                onClick={async () => {
+                  const ok = await onSave(draft); // Fix: only close on confirmed save
+                  if (ok) onClose();
                 }}
               >
                 Save
@@ -1686,6 +1687,7 @@ export default function App() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [authSession, setAuthSession] = useState<Session | null>(null); // Fix: keep auth session as single source of truth
   const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [authEmail, setAuthEmail] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -1753,7 +1755,7 @@ export default function App() {
 
 
 
-  const isAuthed = !!authUserId;
+  const isAuthed = !!authSession?.user;
   const currentUserProfile = useMemo(
     () => profiles.find((p) => p.id === authUserId) || null,
     [profiles, authUserId]
@@ -2147,7 +2149,7 @@ export default function App() {
     deleteTask(id);
   }, [deleteTask]);
   const handleRenameTask = useCallback((task: Task) => {
-    saveTask(task);
+    void saveTask(task);
   }, [saveTask]);
 
   function isPhaseCollapsed(id: string) {
@@ -2283,10 +2285,6 @@ export default function App() {
     if (error) {
       setAuthError(error.message);
     }
-    if (!error) {
-      setAuthUserId(null);
-      setAuthEmail(null);
-    }
     setEmail("");
     setPassword("");
     setCurrentProjectId("");
@@ -2300,8 +2298,9 @@ export default function App() {
     let mounted = true;
 
     async function boot() {
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession(); // Fix: load session on boot
       if (mounted) {
+        setAuthSession(session ?? null);
         setAuthUserId(session?.user?.id ?? null);
         setAuthEmail(session?.user?.email ?? null);
         if (sessionError) {
@@ -2312,9 +2311,10 @@ export default function App() {
         }
       }
 
-      const { data: sub } = supabase.auth.onAuthStateChange((_event, session2) => {
+      const { data: sub } = supabase.auth.onAuthStateChange((_event, session2) => { // Fix: single auth listener
         if (!mounted) return;
         console.info("[auth] state change:", _event, session2?.user?.id ?? "none");
+        setAuthSession(session2 ?? null);
         setAuthUserId(session2?.user?.id ?? null);
         setAuthEmail(session2?.user?.email ?? null);
         setAuthError(null);
@@ -2966,7 +2966,7 @@ export default function App() {
     }
   }
 
-  const handleSaveTask = useCallback((draft: Task) => {
+  const handleSaveTask = useCallback(async (draft: Task) => {
     const nextTask = draft.id ? draft : { ...draft, id: uuid() };
     const prevTask = draft.id ? tasks.find((t) => t.id === draft.id) : undefined;
     const prevAssigned = prevTask ? getAssignedIds(prevTask) : [];
@@ -2980,11 +2980,12 @@ export default function App() {
       return perAssignment !== false && userPref;
     });
 
-    saveTask(nextTask);
+    const saved = await saveTask(nextTask); // Fix: wait for Supabase before updating UI side-effects
 
-    if (currentProjectId && notifyIds.length) {
+    if (saved && currentProjectId && notifyIds.length) {
       void triggerAssignmentNotifications({ task: nextTask, projectId: currentProjectId, userIds: notifyIds });
     }
+    return saved;
   }, [tasks, saveTask, currentProjectId, profileById]);
 
   function buildNewTask(overridePhaseId?: string): Task {

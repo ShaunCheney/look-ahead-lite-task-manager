@@ -120,18 +120,40 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
     };
   }
 
-  function saveTask(draft: svc.Task) {
+  async function saveTask(draft: svc.Task) {
+    // Fix: write to Supabase first; update UI only on success.
+    if (!authUserId || !currentProjectId) {
+      console.error("Task save skipped: missing auth user or project.");
+      return false;
+    }
     const normalized = normalizeTask(draft);
-    const hasExisting = normalized.id ? data.tasks.some((t) => t.id === normalized.id) : false;
-    const next = (() => {
-      if (normalized.id && hasExisting) {
-        return { columns: data.columns, tasks: data.tasks.map((t) => (t.id === normalized.id ? { ...normalized } : t)) };
-      }
-      return { columns: data.columns, tasks: [...data.tasks, { ...normalized, id: normalized.id || uuid() }] };
-    })();
+    const taskId = normalized.id || uuid();
+    const taskToSave = { ...normalized, id: taskId };
 
-    setBoard(next);
-    scheduleSaveBoard(next.columns, next.tasks);
+    const hasExisting = data.tasks.some((t) => t.id === taskId);
+    const nextTasks = hasExisting
+      ? data.tasks.map((t) => (t.id === taskId ? { ...taskToSave } : t))
+      : [...data.tasks, { ...taskToSave }];
+    const orderMap = svc.computeTaskSortOrders(data.columns, nextTasks);
+    const sortOrder = orderMap[taskId] ?? 0;
+
+    try {
+      const row = await svc.saveTaskToSupabase(taskToSave, currentProjectId, sortOrder, authUserId);
+      const savedTask = svc.mapTaskRowToTask(row, authUserId);
+      setData((prev) => {
+        const exists = prev.tasks.some((t) => t.id === savedTask.id);
+        const tasks = exists
+          ? prev.tasks.map((t) => (t.id === savedTask.id ? savedTask : t))
+          : [...prev.tasks, savedTask];
+        return { columns: prev.columns, tasks };
+      });
+      setBoardError(null);
+      return true;
+    } catch (e: any) {
+      console.error("Task save failed:", e); // Fix: surface Supabase errors
+      setBoardError(e?.message || "Failed to save task");
+      return false;
+    }
   }
 
   async function deleteTask(id: string) {
