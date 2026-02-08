@@ -70,6 +70,7 @@ interface ProjectRow {
 }
 
 type UserRole = "admin" | "user";
+type ProjectRole = "admin" | "editor" | "viewer";
 
 type UserProfile = UserOption & {
   email?: string;
@@ -1688,6 +1689,8 @@ export default function App() {
   });
 
   const [activeView, setActiveView] = useState<"tasks" | "logs" | "settings">("tasks");
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [projectRole, setProjectRole] = useState<ProjectRole | null>(null);
 
   
   const {
@@ -1776,6 +1779,77 @@ export default function App() {
   const showTasksView = activeView === "tasks";
   const showLogsView = activeView === "logs";
   const showSettingsView = activeView === "settings";
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSettingsRoles() {
+      if (!authUserId) {
+        if (!cancelled) {
+          setIsSuperAdmin(false);
+          setProjectRole(null);
+        }
+        return;
+      }
+
+      if (!currentProjectId) {
+        if (!cancelled) setProjectRole(null);
+      }
+
+      try {
+        const profilePromise = supabase
+          .from("user_profiles")
+          .select("is_super_admin")
+          .eq("user_id", authUserId)
+          .maybeSingle();
+
+        const membershipPromise = currentProjectId
+          ? supabase
+              .from("project_members")
+              .select("role")
+              .eq("project_id", currentProjectId)
+              .eq("user_id", authUserId)
+              .maybeSingle()
+          : Promise.resolve({ data: null, error: null });
+
+        const [{ data: profileData, error: profileError }, { data: memberData, error: memberError }] =
+          await Promise.all([profilePromise, membershipPromise]);
+
+        if (profileError) {
+          console.warn("Super admin lookup failed:", profileError);
+        }
+        if (!cancelled) {
+          setIsSuperAdmin(Boolean(profileData?.is_super_admin));
+        }
+
+        if (!currentProjectId) return;
+
+        if (memberError) {
+          console.warn("Project role lookup failed:", memberError);
+          if (!cancelled) setProjectRole(null);
+          return;
+        }
+
+        const rawRole = memberData?.role;
+        const normalizedRole =
+          rawRole === "admin" || rawRole === "editor" || rawRole === "viewer" ? rawRole : null;
+
+        if (!cancelled) setProjectRole(normalizedRole);
+      } catch (error) {
+        console.warn("Settings role lookup failed:", error);
+        if (!cancelled) {
+          setIsSuperAdmin(false);
+          setProjectRole(null);
+        }
+      }
+    }
+
+    loadSettingsRoles();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId, currentProjectId, showSettingsView]);
 
   // Schema note:
   // - profiles: id, full_name, email, role (default "user"), notify_assignments (default true)
@@ -3636,7 +3710,10 @@ export default function App() {
                   <CardContent className="p-4 space-y-2">
                     <div className="text-sm font-semibold">Account</div>
                     <div className="text-sm text-neutral-600">
-                      Role: <strong>{authRole}</strong>
+                      Role: <strong>{isSuperAdmin ? "Super Admin" : "User"}</strong>
+                    </div>
+                    <div className="text-sm text-neutral-600">
+                      Project Role: <strong>{projectRole ?? "No Access"}</strong>
                     </div>
                     {userGroupIds.length > 0 && (
                       <div className="text-xs text-neutral-500">
