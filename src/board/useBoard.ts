@@ -123,7 +123,9 @@ export function useBoard(authUserId?: string | null, currentProjectId?: string) 
   async function saveTask(draft: svc.Task) {
     // Fix: write to Supabase first; update UI only on success.
     if (!authUserId || !currentProjectId) {
+      const message = "Please sign in and select a project before saving tasks.";
       console.error("Task save skipped: missing auth user or project.");
+      setBoardError(message);
       return false;
     }
     const normalized = normalizeTask(draft);
